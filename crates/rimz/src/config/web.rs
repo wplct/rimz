@@ -29,6 +29,7 @@ pub struct WebPrefs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font_source: Option<String>,
     pub style_client: bool,
+    pub image_paste: bool,
 }
 
 impl Default for WebPrefs {
@@ -46,6 +47,7 @@ impl Default for WebPrefs {
             font: "JetBrainsMono Nerd Font Mono".to_owned(),
             font_source: None,
             style_client: true,
+            image_paste: true,
         }
     }
 }

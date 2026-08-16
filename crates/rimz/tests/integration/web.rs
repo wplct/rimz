@@ -1,4 +1,5 @@
 use crate::common::{CommandTimeoutExt, Env, daemon_test_guard};
+use base64::Engine as _;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -99,6 +100,22 @@ fn ttyd_input_guard_stops_macos_option_keypress_before_xterm() {
 }
 
 #[test]
+fn ttyd_image_paste_uploads_and_inserts_a_shell_quoted_path() {
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let output = Command::new("node")
+        .arg(crate_root.join("tests/fixtures/image-paste/harness.mjs"))
+        .arg(crate_root.join("src/web/ttyd/image_paste.js"))
+        .output()
+        .expect("run ttyd image-paste Node harness");
+    assert!(
+        output.status.success(),
+        "ttyd image-paste Node harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn ttyd_mouse_flow_paces_drag_reports() {
     let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let output = Command::new("node")
@@ -128,10 +145,45 @@ fn free_loopback_port() -> u16 {
         .port()
 }
 
+#[cfg(unix)]
+/// 通过真实 TCP gate 上传图片并返回服务端 JSON。
+fn upload_image(port: u16, authorization: &str, image: &[u8]) -> serde_json::Value {
+    use std::net::{Shutdown, TcpStream};
+
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect image upload gate");
+    write!(
+        stream,
+        "POST /__rimz/upload/image HTTP/1.1\r\nHost: local\r\nAuthorization: {authorization}\r\nX-RimZ-Upload: image\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        image.len()
+    )
+    .expect("write image upload head");
+    stream.write_all(image).expect("write image upload body");
+    stream
+        .shutdown(Shutdown::Write)
+        .expect("finish image upload request");
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .expect("read image upload response");
+    let split = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("HTTP response separator");
+    let head = String::from_utf8_lossy(&response[..split]);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    serde_json::from_slice(&response[split + 4..]).expect("image upload JSON")
+}
+
+/// 旧 Web fixture 默认关闭图片粘贴，专用测试显式开启新 gate 形态。
 fn write_machine_config(env: &Env, text: &str) {
     let path = env.config_root().join("rimz").join("config.toml");
     std::fs::create_dir_all(path.parent().expect("config parent")).expect("mkdir config parent");
-    std::fs::write(path, text).expect("write machine config");
+    let rendered = if text.contains("[web]") && !text.contains("image_paste") {
+        format!("{text}image_paste = false\n")
+    } else {
+        text.to_owned()
+    };
+    std::fs::write(path, rendered).expect("write machine config");
 }
 
 #[cfg(unix)]
@@ -193,7 +245,7 @@ impl WebFixture {
         let share_port = free_loopback_port();
         write_machine_config(
             &env,
-            &format!("[web]\nport = {web_port}\nshare_port = {share_port}\n"),
+            &format!("[web]\nport = {web_port}\nshare_port = {share_port}\nimage_paste = false\n"),
         );
         Self {
             env,
@@ -941,6 +993,100 @@ fn read_only_token_error_points_to_broadcast_sharing() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn image_paste_uploads_through_public_and_remote_tunnel_gates() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let _guard = daemon_test_guard();
+    let fixture = WebFixture::new("ttyd-image-paste.log");
+    write_machine_config(
+        &fixture.env,
+        &format!(
+            "[web]\nport = {}\nshare_port = {}\nstyle_client = false\nimage_paste = true\n",
+            fixture.web_port, fixture.share_port
+        ),
+    );
+    let start = fixture
+        .command()
+        .args(["web", "start"])
+        .bounded_output()
+        .expect("start image-paste daemon");
+    assert_success(&start, "image-paste web start");
+
+    let daemon_path = fixture.env.state_root().join("rimz/web-ttyd.json");
+    let record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&daemon_path).expect("image daemon record"))
+            .expect("image daemon JSON");
+    assert_eq!(record["image_paste"], true);
+    let upstream_port = record["gate"]["upstream_port"]
+        .as_u64()
+        .expect("ttyd upstream port") as u16;
+    let tunnel_port = record["gate"]["tunnel_port"]
+        .as_u64()
+        .expect("image tunnel port") as u16;
+    assert_ne!(upstream_port, fixture.web_port);
+    assert_ne!(tunnel_port, upstream_port);
+    assert_ne!(tunnel_port, fixture.web_port);
+
+    let credential: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            fixture
+                .env
+                .state_root()
+                .join("rimz/web-ttyd-credential.json"),
+        )
+        .expect("web credential"),
+    )
+    .expect("web credential JSON");
+    let secret = credential["secret"].as_str().expect("credential secret");
+    let authorization = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(format!("rimz:{secret}"))
+    );
+    let image = b"\x89PNG\r\n\x1a\nimage-paste";
+    let public = upload_image(fixture.web_port, &authorization, image);
+    let tunnel = upload_image(tunnel_port, &authorization, image);
+    for payload in [public, tunnel] {
+        let path = PathBuf::from(payload["path"].as_str().expect("uploaded image path"));
+        assert!(path.is_absolute(), "{}", path.display());
+        assert_eq!(std::fs::read(&path).expect("uploaded image"), image);
+        assert_eq!(
+            std::fs::metadata(&path)
+                .expect("uploaded image metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    let url = fixture
+        .command()
+        .args(["--mux", "tmux", "web", "url", "--session"])
+        .arg(&fixture.workspace.session_name)
+        .arg("--json")
+        .bounded_output()
+        .expect("inspect image-paste web payload");
+    let payload = success_json(&url, "image-paste web payload");
+    assert_eq!(payload["tunnel_port"], tunnel_port);
+
+    let gate_pid = record["gate"]["pid"].as_u64().expect("image gate pid") as u32;
+    let gate_process = rimz::proc::list_processes()
+        .into_iter()
+        .find(|process| process.pid == gate_pid)
+        .expect("live image-paste gate");
+    assert!(gate_process.cmdline.contains("--image-paste"));
+    assert!(gate_process.cmdline.contains("--tunnel-listen"));
+
+    let stop = fixture
+        .command()
+        .args(["web", "stop"])
+        .bounded_output()
+        .expect("stop image-paste daemon");
+    assert_success(&stop, "stop image-paste daemon");
 }
 
 #[cfg(unix)]

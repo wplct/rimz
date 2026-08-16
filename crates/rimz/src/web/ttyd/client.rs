@@ -24,7 +24,7 @@ use crate::web::WebWarning;
 const STOCK_INDEX_TIMEOUT: Duration = Duration::from_secs(5);
 const STOCK_INDEX_MAX_BYTES: u64 = 16 * 1024 * 1024;
 const INDEX_CACHE_DIR: &str = "rimz/web-ttyd";
-const CUSTOM_INDEX_SCHEMA: &str = "rimz.ttyd-index.v10";
+const CUSTOM_INDEX_SCHEMA: &str = "rimz.ttyd-index.v11";
 
 const OFFLINE_ENV: &str = "RIMZ_WEB_FONTS_OFFLINE";
 const FONT_CACHE_DIR: &str = "rimz/web-fonts";
@@ -43,6 +43,7 @@ pub(super) fn profile(
     config: &MachineConfig,
     ttyd_program: &Path,
     ttyd_version: &str,
+    image_paste: bool,
 ) -> ClientProfile {
     let mut profile = ClientProfile {
         args: vec![
@@ -99,7 +100,13 @@ pub(super) fn profile(
         }
     }
 
-    let index = ensure_custom_index(ttyd_program, ttyd_version, font_family, &font_faces);
+    let index = ensure_custom_index(
+        ttyd_program,
+        ttyd_version,
+        font_family,
+        &font_faces,
+        image_paste,
+    );
     apply_custom_index(&mut profile, index);
     profile
 }
@@ -128,8 +135,9 @@ fn ensure_custom_index(
     ttyd_version: &str,
     family: Option<&str>,
     faces: &[FontFace],
+    image_paste: bool,
 ) -> Result<Option<(PathBuf, String)>, String> {
-    let key = custom_index_key(ttyd_version, family, faces);
+    let key = custom_index_key(ttyd_version, family, faces, image_paste);
     let path = paths::cache_home()
         .join(INDEX_CACHE_DIR)
         .join(format!("index-{key}.html"));
@@ -138,7 +146,7 @@ fn ensure_custom_index(
     }
 
     let stock = fetch_stock_index(program)?;
-    let Some(rendered) = inject_client_profile(&stock, family, faces) else {
+    let Some(rendered) = inject_client_profile(&stock, family, faces, image_paste) else {
         return Ok(None);
     };
     atomic::write_cache_bytes_atomically(&path, rendered.as_bytes()).map_err(|err| {
@@ -198,8 +206,19 @@ fn get_stock_index(port: u16, secret: &str) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|err| format!("stock ttyd index is not UTF-8: {err}"))
 }
 
-fn custom_index_key(ttyd_version: &str, family: Option<&str>, faces: &[FontFace]) -> String {
-    custom_index_key_with_schema(CUSTOM_INDEX_SCHEMA, ttyd_version, family, faces)
+fn custom_index_key(
+    ttyd_version: &str,
+    family: Option<&str>,
+    faces: &[FontFace],
+    image_paste: bool,
+) -> String {
+    custom_index_key_with_schema(
+        CUSTOM_INDEX_SCHEMA,
+        ttyd_version,
+        family,
+        faces,
+        image_paste,
+    )
 }
 
 fn custom_index_key_with_schema(
@@ -207,8 +226,9 @@ fn custom_index_key_with_schema(
     ttyd_version: &str,
     family: Option<&str>,
     faces: &[FontFace],
+    image_paste: bool,
 ) -> String {
-    let bootstrap = client_bootstrap(family);
+    let bootstrap = client_bootstrap(family, image_paste);
     custom_index_key_with_bootstrap(schema, &bootstrap, ttyd_version, family, faces)
 }
 
@@ -237,7 +257,12 @@ fn hash_index_part(hasher: &mut Sha256, value: &[u8]) {
     hasher.update(value);
 }
 
-fn inject_client_profile(stock: &str, family: Option<&str>, faces: &[FontFace]) -> Option<String> {
+fn inject_client_profile(
+    stock: &str,
+    family: Option<&str>,
+    faces: &[FontFace],
+    image_paste: bool,
+) -> Option<String> {
     let head_marker = stock.find("</head>")?;
     let body_marker = stock.rfind("</body>")?;
     if body_marker < head_marker {
@@ -263,7 +288,7 @@ fn inject_client_profile(stock: &str, family: Option<&str>, faces: &[FontFace]) 
         ".xterm .rimz-overlay{{top:50% !important;left:50% !important;transform:translate(-50%,-50%);padding:10px 18px !important;border-radius:10px !important;background:rgba(13,15,20,.78) !important;color:#e6e8ee !important;font:500 13px/1.4 {overlay_family} !important;letter-spacing:.04em;border:1px solid rgba(255,255,255,.14);box-shadow:0 8px 32px rgba(0,0,0,.45);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}}"
     ));
     style.push_str("</style>");
-    let bootstrap = client_bootstrap(family);
+    let bootstrap = client_bootstrap(family, image_paste);
 
     let mut rendered = String::with_capacity(stock.len() + style.len() + bootstrap.len());
     rendered.push_str(&stock[..head_marker]);
@@ -274,7 +299,7 @@ fn inject_client_profile(stock: &str, family: Option<&str>, faces: &[FontFace]) 
     Some(rendered)
 }
 
-fn client_bootstrap(family: Option<&str>) -> String {
+fn client_bootstrap(family: Option<&str>, image_paste: bool) -> String {
     let family = family.map_or_else(|| "null".to_owned(), js_string);
     let diacritics = ROW_COLUMN_DIACRITICS
         .iter()
@@ -286,6 +311,12 @@ fn client_bootstrap(family: Option<&str>) -> String {
     let ws_url = include_str!("ws_url.js");
     let pixel_layer = include_str!("pixel_layer.js");
     let input_guard = include_str!("input_guard.js");
+    let image_paste_script = image_paste
+        .then(|| include_str!("image_paste.js"))
+        .unwrap_or("");
+    let install_image_paste = image_paste
+        .then_some("installImagePaste(term);")
+        .unwrap_or("");
     let pixel_protocol = crate::web::TTYD_PIXEL_PROTOCOL;
     let session_osc = crate::web::TTYD_SESSION_OSC;
     let placeholder = u32::from(PLACEHOLDER);
@@ -301,6 +332,7 @@ const RIMZ_PIXEL_DIACRITICS={diacritics};
 installRoomWebSocketUrl();
 {pixel_layer}
 {input_guard}
+{image_paste_script}
 const waitForTerminal=()=>new Promise(resolve=>{{
   let attempts=0;
   const find=()=>{{
@@ -326,6 +358,7 @@ waitForTerminal().then(term=>{{
     try{{navigator.clipboard.writeText(text).catch(()=>{{}});}}catch(_){{}}
   }};
   const keyHandler=installInputGuard(term,sendInput);
+  {install_image_paste}
   term.parser.registerOscHandler(52,data=>{{
     const semi=data.indexOf(";");
     if(semi<0)return true;
@@ -918,7 +951,12 @@ mod tests {
     fn browser_safety_options_survive_disabled_web() {
         let mut config = MachineConfig::default();
         config.web.enabled = false;
-        let profile = profile(&config, Path::new("/missing-ttyd"), "ttyd version 1.7.5");
+        let profile = profile(
+            &config,
+            Path::new("/missing-ttyd"),
+            "ttyd version 1.7.5",
+            false,
+        );
         assert_eq!(
             profile.args,
             [
@@ -938,8 +976,9 @@ mod tests {
 
     #[test]
     fn compatibility_profile_includes_browser_guards_without_client_styling() {
-        let rendered = inject_client_profile("<html><head></head><body></body></html>", None, &[])
-            .expect("document markers");
+        let rendered =
+            inject_client_profile("<html><head></head><body></body></html>", None, &[], false)
+                .expect("document markers");
         assert!(rendered.contains("rimz-web-client"));
         assert!(rendered.contains("term.options.cursorBlink=false"));
         assert!(rendered.contains("optionsService.onOptionChange"));
@@ -1039,17 +1078,33 @@ mod tests {
             weight: 400,
         }];
         let family = "RimZ \"Font\" </style></script>\n";
-        assert_eq!(CUSTOM_INDEX_SCHEMA, "rimz.ttyd-index.v10");
-        let key = custom_index_key("ttyd 1.7.7", Some(family), &faces);
-        assert_eq!(key, custom_index_key("ttyd 1.7.7", Some(family), &faces));
-        assert_ne!(key, custom_index_key("ttyd 1.7.8", Some(family), &faces));
-        assert_ne!(key, custom_index_key("ttyd 1.7.7", None, &faces));
+        assert_eq!(CUSTOM_INDEX_SCHEMA, "rimz.ttyd-index.v11");
+        let key = custom_index_key("ttyd 1.7.7", Some(family), &faces, true);
+        assert_eq!(
+            key,
+            custom_index_key("ttyd 1.7.7", Some(family), &faces, true)
+        );
         assert_ne!(
             key,
-            custom_index_key_with_schema("rimz.ttyd-index.v9", "ttyd 1.7.7", Some(family), &faces)
+            custom_index_key("ttyd 1.7.8", Some(family), &faces, true)
+        );
+        assert_ne!(key, custom_index_key("ttyd 1.7.7", None, &faces, true));
+        assert_ne!(
+            key,
+            custom_index_key("ttyd 1.7.7", Some(family), &faces, false)
+        );
+        assert_ne!(
+            key,
+            custom_index_key_with_schema(
+                "rimz.ttyd-index.v10",
+                "ttyd 1.7.7",
+                Some(family),
+                &faces,
+                true,
+            )
         );
 
-        let bootstrap = client_bootstrap(Some(family));
+        let bootstrap = client_bootstrap(Some(family), true);
         let mut changed_bootstrap = bootstrap.clone();
         changed_bootstrap.push_str("// changed");
         assert_eq!(
@@ -1077,6 +1132,7 @@ mod tests {
             "<html><head><title>ttyd</title></head><body></body></html>",
             Some(family),
             &faces,
+            true,
         )
         .expect("document markers");
         assert!(
@@ -1091,6 +1147,7 @@ mod tests {
             )
         );
         assert!(rendered.contains("term.options.cursorBlink=false"));
+        assert!(rendered.contains("installImagePaste(term)"));
         assert!(rendered.contains("optionsService.onOptionChange"));
         assert!(rendered.contains("if(term.options.cursorBlink)term.options.cursorBlink=false"));
         assert!(rendered.contains("params.includes(25)"));
@@ -1139,12 +1196,17 @@ mod tests {
         let head = rendered.find("</head>").unwrap();
         assert!(style < overlay_rule && overlay_rule < head);
         assert!(rendered.find("rimz-web-client").unwrap() < rendered.find("</body>").unwrap());
-        let default_style =
-            inject_client_profile("<html><head></head><body></body></html>", None, &faces)
-                .expect("document markers");
+        let default_style = inject_client_profile(
+            "<html><head></head><body></body></html>",
+            None,
+            &faces,
+            false,
+        )
+        .expect("document markers");
         assert!(default_style.contains("font:500 13px/1.4 monospace !important"));
+        assert!(!default_style.contains("installImagePaste(term)"));
         assert_eq!(
-            inject_client_profile("<html></html>", Some("font"), &faces),
+            inject_client_profile("<html></html>", Some("font"), &faces, false),
             None
         );
     }

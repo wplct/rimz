@@ -103,12 +103,16 @@ pub(super) struct WritableDaemonRecord {
     gate: Option<GateRecord>,
     #[serde(default)]
     basic_upstream: bool,
+    #[serde(default)]
+    image_paste: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct GateRecord {
     pid: u32,
     upstream_port: u16,
+    #[serde(default)]
+    tunnel_port: Option<u16>,
 }
 
 impl WritableDaemonRecord {
@@ -127,6 +131,7 @@ impl WritableDaemonRecord {
             trusted_proxies: Vec::new(),
             gate: None,
             basic_upstream: true,
+            image_paste: false,
         }
     }
 }
@@ -149,6 +154,7 @@ struct WritableDaemonSpec {
     auth: WebAuth,
     auth_users: Vec<String>,
     trusted_proxies: Vec<String>,
+    image_paste: bool,
 }
 
 pub(super) struct WritableDaemon {
@@ -364,7 +370,13 @@ fn tunnel_port(record: &WritableDaemonRecord) -> u16 {
     record
         .gate
         .as_ref()
-        .map_or(record.process.port, |gate| gate.upstream_port)
+        .and_then(|gate| gate.tunnel_port)
+        .unwrap_or_else(|| {
+            record
+                .gate
+                .as_ref()
+                .map_or(record.process.port, |gate| gate.upstream_port)
+        })
 }
 
 fn auth_from_config(config: &MachineConfig) -> WebAuth {
@@ -402,6 +414,7 @@ fn desired_spec(config: &MachineConfig) -> Result<WritableDaemonSpec> {
         auth,
         auth_users,
         trusted_proxies: config.web.trusted_proxies.clone(),
+        image_paste: config.web.image_paste,
     })
 }
 
@@ -427,6 +440,13 @@ fn record_matches(
         && record.auth == desired.auth
         && record.auth_users == desired.auth_users
         && record.trusted_proxies == desired.trusted_proxies
+        && record.image_paste == desired.image_paste
+        && record
+            .gate
+            .as_ref()
+            .and_then(|gate| gate.tunnel_port)
+            .is_some()
+            == desired.image_paste
         && record.gate.is_some() == gated(desired)
 }
 
@@ -448,7 +468,9 @@ fn auth_warnings(desired: &WritableDaemonSpec) -> Vec<WebWarning> {
 }
 
 fn gated(desired: &WritableDaemonSpec) -> bool {
-    !desired.trusted_proxies.is_empty() || matches!(desired.auth, WebAuth::TrustedHeader { .. })
+    desired.image_paste
+        || !desired.trusted_proxies.is_empty()
+        || matches!(desired.auth, WebAuth::TrustedHeader { .. })
 }
 
 fn reap_legacy_instances() {
@@ -557,6 +579,13 @@ fn start_daemon_with_profile(
     credential: &TtydCredential,
     profile: &ClientProfile,
 ) -> Result<WritableDaemonRecord> {
+    if desired.image_paste {
+        super::upload::ImageUploadStore::prepare().map_err(|err| {
+            WebErr::ImageUploadUnavailable {
+                reason: err.to_string(),
+            }
+        })?;
+    }
     let is_gated = gated(desired);
     let ttyd_port = if is_gated {
         choose_ephemeral_port().map_err(|source| WebErr::GateIo {
@@ -588,6 +617,14 @@ fn start_daemon_with_profile(
     )?;
     let pid = process.pid;
     let ttyd_address = SocketAddr::new(ttyd_interface, ttyd_port);
+    let tunnel_port = desired
+        .image_paste
+        .then(choose_ephemeral_port)
+        .transpose()
+        .map_err(|source| WebErr::GateIo {
+            action: "choosing the browser tunnel port",
+            source,
+        })?;
     let gate = if is_gated {
         let public_address = socket_address(&desired.listener.interface, desired.listener.port)?;
         let gate_pid = match spawn_gate(
@@ -596,6 +633,8 @@ fn start_daemon_with_profile(
             &desired.trusted_proxies,
             &desired.auth,
             &desired.auth_users,
+            desired.image_paste,
+            tunnel_port,
         ) {
             Ok(pid) => pid,
             Err(err) => {
@@ -606,6 +645,7 @@ fn start_daemon_with_profile(
         Some(GateRecord {
             pid: gate_pid,
             upstream_port: ttyd_port,
+            tunnel_port,
         })
     } else {
         None
@@ -617,6 +657,7 @@ fn start_daemon_with_profile(
         trusted_proxies: desired.trusted_proxies.clone(),
         gate,
         basic_upstream: true,
+        image_paste: desired.image_paste,
     };
     let public_address = record_public_address(&record)?;
     if !wait_for_address(public_address, START_TIMEOUT) {
@@ -624,6 +665,15 @@ fn start_daemon_with_profile(
         return Err(WebErr::TtydStartTimeout {
             address: public_address,
         });
+    }
+    if let Some(tunnel_port) = tunnel_port {
+        let tunnel_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), tunnel_port);
+        if !wait_for_address(tunnel_address, START_TIMEOUT) {
+            let _ = stop_record(&record);
+            return Err(WebErr::TtydStartTimeout {
+                address: tunnel_address,
+            });
+        }
     }
     if let Err(err) = write_daemon(&record) {
         let _ = stop_record(&record);
@@ -638,6 +688,8 @@ fn spawn_gate(
     allow: &[String],
     auth: &WebAuth,
     auth_users: &[String],
+    image_paste: bool,
+    tunnel_port: Option<u16>,
 ) -> Result<u32> {
     let exe = std::env::current_exe().map_err(|source| WebErr::Io {
         path: PathBuf::from("/proc/self/exe"),
@@ -656,6 +708,14 @@ fn spawn_gate(
     }
     for user in auth_users {
         spec = spec.arg("--auth-user").arg(user.clone());
+    }
+    if image_paste {
+        spec = spec.arg("--image-paste");
+    }
+    if let Some(port) = tunnel_port {
+        spec = spec
+            .arg("--tunnel-listen")
+            .arg(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port).to_string());
     }
     spawn_detached(spec)
 }
@@ -743,7 +803,8 @@ fn prepare_fresh_start(
     }) {
         ensure_port_available(public_address, kind)?;
     }
-    let profile = client::profile(config, &program, version);
+    let image_paste = matches!(kind, ListenerKind::Writable) && config.web.image_paste;
+    let profile = client::profile(config, &program, version, image_paste);
     Ok((program, public_address, profile))
 }
 
@@ -1754,9 +1815,12 @@ mod tests {
             gate: Some(GateRecord {
                 pid: u32::MAX - 1,
                 upstream_port: 41820,
+                tunnel_port: Some(41821),
             }),
             basic_upstream: true,
+            image_paste: true,
         };
+        assert_eq!(tunnel_port(&daemon), 41821);
         write_cache_json(&path, &daemon).expect("write daemon state");
         assert_eq!(read_json_optional(&path).expect("read state"), Some(daemon));
     }
@@ -1770,6 +1834,7 @@ mod tests {
         assert!(daemon.auth_users.is_empty());
         assert!(daemon.gate.is_none());
         assert!(!daemon.basic_upstream);
+        assert!(!daemon.image_paste);
         assert!(!daemon.process.launch_context_scrubbed);
         assert_eq!(daemon.process.index_key, None);
     }
@@ -1827,6 +1892,7 @@ mod tests {
             },
             auth_users: Vec::new(),
             trusted_proxies: Vec::new(),
+            image_paste: true,
         };
         assert!(matches!(
             auth_warnings(&spec).as_slice(),
@@ -1850,9 +1916,13 @@ mod tests {
         let config = MachineConfig::default();
         let desired = desired_spec(&config).expect("desired daemon");
         let mut daemon = WritableDaemonRecord::basic_loopback(42, config.web.port);
+        daemon.image_paste = desired.image_paste;
         let mut profile = ClientProfile::default();
 
         assert!(record_matches(&daemon, &desired, &profile));
+        daemon.image_paste = !desired.image_paste;
+        assert!(!record_matches(&daemon, &desired, &profile));
+        daemon.image_paste = desired.image_paste;
         daemon.process.launch_context_scrubbed = false;
         assert!(!record_matches(&daemon, &desired, &profile));
         daemon.process.launch_context_scrubbed = true;

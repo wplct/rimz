@@ -116,6 +116,7 @@ fn assert_web_config(config: &MachineConfig) {
     assert_eq!(config.web.font, "FiraCode Nerd Font Mono");
     assert_eq!(config.web.font_source.as_deref(), Some("/tmp/font.woff2"));
     assert!(!config.web.style_client);
+    assert!(!config.web.image_paste);
 }
 
 fn assert_remote_control_config(config: &MachineConfig) {
@@ -2438,6 +2439,7 @@ fn web_enabled_defaults_on_and_parses_off() {
     assert!(WebPrefs::default().auth_header.is_none());
     assert!(WebPrefs::default().auth_users.is_empty());
     assert!(WebPrefs::default().trusted_proxies.is_empty());
+    assert!(WebPrefs::default().image_paste);
 
     let dir = tempdir().expect("tempdir");
     let config = load_no_fragments(&write(&dir, "[web]\nenabled = false\n")).expect("load");
@@ -2466,7 +2468,8 @@ fn scalar_sections_parse_non_default_values() {
              trusted_proxies = [\"10.0.0.0/8\", \"fd00::/8\"]\n\
              font = \"FiraCode Nerd Font Mono\"\n\
              font_source = \"/tmp/font.woff2\"\n\
-             style_client = false\n",
+             style_client = false\n\
+             image_paste = false\n",
             assert_web_config,
         ),
         (

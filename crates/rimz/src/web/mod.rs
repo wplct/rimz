@@ -20,6 +20,7 @@ use crate::store::atomic;
 
 mod gate;
 mod ttyd;
+mod upload;
 
 pub use gate::{GateAuth, RelayTarget};
 
@@ -161,6 +162,8 @@ pub enum WebErr {
         #[source]
         source: io::Error,
     },
+    #[error("browser image uploads are unavailable: {reason}")]
+    ImageUploadUnavailable { reason: String },
     #[error("ttyd credential `{name}` does not exist (the single credential is `rimz`)")]
     TtydCredentialNotFound { name: String },
     #[error(
@@ -443,14 +446,31 @@ pub fn gate_authorization() -> Result<String> {
 pub fn serve_gate(
     listen: SocketAddr,
     upstream: SocketAddr,
+    tunnel_listen: Option<SocketAddr>,
     allow: &[String],
     auth: Option<GateAuth>,
+    image_paste: bool,
 ) -> Result<()> {
     let allow = allow
         .iter()
         .map(|value| gate::Cidr::parse(value))
         .collect::<Result<Vec<_>>>()?;
-    gate::serve(listen, upstream, allow, auth)
+    let uploads = image_paste
+        .then(upload::ImageUploadStore::prepare)
+        .transpose()
+        .map_err(|err| WebErr::ImageUploadUnavailable {
+            reason: err.to_string(),
+        })?;
+    let basic_authorization = image_paste.then(ttyd::authorization_header).transpose()?;
+    gate::serve(
+        listen,
+        upstream,
+        allow,
+        auth,
+        uploads,
+        basic_authorization,
+        tunnel_listen,
+    )
 }
 
 pub fn serve_tunnel_relay(listener: TcpListener, target: Arc<Mutex<RelayTarget>>) -> Result<()> {

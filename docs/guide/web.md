@@ -81,6 +81,10 @@ tmux viewers attach read-only and with `ignore-size`, so they cannot type or res
 
 ## Browser appearance and input
 
+Paste a screenshot or bitmap while a writable browser room has focus and RimZ uploads it to the serving machine's private temporary directory, then inserts the shell-quoted absolute path at the cursor. It does not submit the prompt. PNG, JPEG, WebP, and GIF are accepted up to 20 MiB; file signatures decide the format, so an SVG or a mislabeled payload is rejected. Files are mode `0600` inside a per-user mode `0700` directory and expire after 24 hours. On Linux with the default temporary root, a returned path looks like `/tmp/rimz-web-images-1000/<uuid>.png`.
+
+Image paste is on by default for the authenticated writable listener. Set `rimz config set web.image_paste false`, then run `rimz web restart`, to keep ordinary text paste while disabling the upload route. Read-only broadcasts never install the image-paste client or accept uploads.
+
 RimZ gives ttyd the active theme and configured browser font when the daemon starts. `JetBrainsMono Nerd Font Mono` and `CaskaydiaCove Nerd Font Mono` are built-in presets: RimZ downloads verified regular and bold faces and caches them under `$XDG_CACHE_HOME/rimz/web-fonts`.
 
 Set `font_source` to a local `.ttf`, `.otf`, `.woff`, or `.woff2` file, or to an HTTPS URL. A family with no preset and no source asks the browser to resolve an installed font. `style_client = false` keeps ttyd's browser colors while retaining keyboard, cursor, clipboard, and reconnect fixes.
@@ -133,7 +137,7 @@ rimz web restart
 
 The gate rejects missing, empty, duplicated, and non-allowlisted identity headers after validating the peer address. An empty `trusted_proxies` list accepts only a proxy connecting from loopback. The gate admits loopback as a source but still requires exactly one identity header there; the private ttyd listener separately requires Basic Auth.
 
-The trusted-header decision applies only at the public gate. `rimz remote connect --web` tunnels through SSH directly to the private ttyd listener and injects the machine credential inside its local relay, so it works the same way in Basic and trusted-header configurations.
+The trusted-header decision applies only at the public gate. `rimz remote connect --web` injects the machine credential inside its local relay and tunnels through SSH to a private loopback listener: the image-capable gate when image paste is enabled, or ttyd directly when it is disabled. Both Basic and trusted-header configurations therefore keep terminal and image traffic on the browser's one local origin without weakening the public proxy decision.
 
 ## Open a remote room
 
@@ -177,13 +181,14 @@ interface = "127.0.0.1"
 font = "JetBrainsMono Nerd Font Mono"
 # font_source = "/path/to/font.woff2"
 style_client = true
+image_paste = true
 ```
 
-`interface` selects the bind address for both daemons; `port` selects the writable listener and `share_port` selects the read-only broadcast listener. `base_url` and `share_base_url` change the respective prefixes RimZ prints when a reverse proxy fronts RimZ; the `/?room=<session>` query remains. `auth_header` puts a proxy-validated identity header at the writable authorization gate while ttyd retains Basic Auth, `auth_users` optionally restricts its exact canonical values, and non-empty `trusted_proxies` admits those source addresses to that gate.
+`interface` selects the bind address for both daemons; `port` selects the writable listener and `share_port` selects the read-only broadcast listener. `base_url` and `share_base_url` change the respective prefixes RimZ prints when a reverse proxy fronts RimZ; the `/?room=<session>` query remains. `auth_header` puts a proxy-validated identity header at the writable authorization gate while ttyd retains Basic Auth, `auth_users` optionally restricts its exact canonical values, and non-empty `trusted_proxies` admits those source addresses to that gate. `image_paste` controls the authenticated temporary-file upload route described above.
 
 ## Security boundary
 
-By default, RimZ invokes ttyd with write access, origin checks, mandatory Basic Auth, and an explicit loopback bind.
+By default, RimZ invokes ttyd with write access, origin checks, mandatory Basic Auth, and an explicit loopback bind. The image-paste route requires that same Basic or trusted-header decision plus a custom same-origin request header that ordinary cross-site forms cannot send; it never exists on the unauthenticated broadcast listener.
 
 The one machine credential authenticates the shared listener, so it grants access to every live RimZ room on that machine rather than only the room named in the first URL. An authenticated client can submit another session argument, and a missing or rejected argument opens the live-room session manager. A remote `--web` tunnel forwards this same machine-wide surface through an unauthenticated loopback relay on the client machine, matching the local-user trust boundary of `ssh -L`; use host-level user isolation on a shared client machine.
 

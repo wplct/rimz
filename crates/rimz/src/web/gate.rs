@@ -5,14 +5,24 @@ use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use super::upload::{IMAGE_UPLOAD_PATH, ImageUploadErr, ImageUploadStore, MAX_IMAGE_BYTES};
 use super::{Result, WebErr};
 
 const MAX_REQUEST_HEAD: usize = 64 * 1024;
 const MAX_HEADERS: usize = 128;
 const MAX_CHUNK_LINE: usize = 8 * 1024;
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const IMAGE_UPLOAD_HEADER: &str = "X-RimZ-Upload";
+const IMAGE_UPLOAD_HEADER_VALUE: &[u8] = b"image";
 const UNAUTHORIZED: &[u8] =
     b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+const FORBIDDEN: &[u8] =
+    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+const LENGTH_REQUIRED: &[u8] =
+    b"HTTP/1.1 411 Length Required\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+const METHOD_NOT_ALLOWED: &[u8] = b"HTTP/1.1 405 Method Not Allowed\r\nAllow: POST\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+const PAYLOAD_TOO_LARGE: &[u8] =
+    b"HTTP/1.1 413 Content Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GateAuth {
@@ -114,16 +124,66 @@ pub(super) fn peer_allowed(peer: IpAddr, allow: &[Cidr]) -> bool {
     peer.is_loopback() || allow.iter().any(|cidr| cidr.contains(peer))
 }
 
+/// 仅 Basic 的 public gate 未配置来源限制时保持 ttyd 的原有可达性。
+fn peer_admitted(peer: IpAddr, allow: &[Cidr], restrict_peers: bool) -> bool {
+    !restrict_peers || peer_allowed(peer, allow)
+}
+
 pub(super) fn serve(
     listen: SocketAddr,
     upstream: SocketAddr,
     allow: Vec<Cidr>,
     auth: Option<GateAuth>,
+    uploads: Option<ImageUploadStore>,
+    basic_authorization: Option<String>,
+    tunnel_listen: Option<SocketAddr>,
 ) -> Result<()> {
     let listener = TcpListener::bind(listen).map_err(|source| WebErr::GateIo {
         action: "binding its listener",
         source,
     })?;
+    if let Some(tunnel_listen) = tunnel_listen {
+        let tunnel_listener =
+            TcpListener::bind(tunnel_listen).map_err(|source| WebErr::GateIo {
+                action: "binding its tunnel listener",
+                source,
+            })?;
+        let tunnel_uploads = uploads.clone();
+        let tunnel_authorization = basic_authorization.clone();
+        std::thread::spawn(move || {
+            let _ = serve_listener(
+                tunnel_listener,
+                upstream,
+                Vec::new(),
+                None,
+                tunnel_uploads,
+                tunnel_authorization,
+                true,
+            );
+        });
+    }
+    let restrict_peers = auth.is_some() || !allow.is_empty();
+    serve_listener(
+        listener,
+        upstream,
+        allow,
+        auth,
+        uploads,
+        basic_authorization,
+        restrict_peers,
+    )
+}
+
+/// 接受一个已绑定监听器，并按认证模式分派每条连接。
+fn serve_listener(
+    listener: TcpListener,
+    upstream: SocketAddr,
+    allow: Vec<Cidr>,
+    auth: Option<GateAuth>,
+    uploads: Option<ImageUploadStore>,
+    basic_authorization: Option<String>,
+    restrict_peers: bool,
+) -> Result<()> {
     loop {
         let (client, peer) = match listener.accept() {
             Ok(connection) => connection,
@@ -135,13 +195,14 @@ pub(super) fn serve(
                 });
             }
         };
-        if !peer_allowed(peer.ip(), &allow) {
+        if !peer_admitted(peer.ip(), &allow, restrict_peers) {
             continue;
         }
         let Ok(upstream) = TcpStream::connect_timeout(&upstream, UPSTREAM_CONNECT_TIMEOUT) else {
             continue;
         };
         if let Some(auth) = auth.clone() {
+            let uploads = uploads.clone();
             std::thread::spawn(move || {
                 relay_authorized(
                     client,
@@ -149,7 +210,14 @@ pub(super) fn serve(
                     Some(&auth.header_name),
                     &auth.allowed_users,
                     &auth.authorization,
+                    uploads.as_ref(),
                 );
+            });
+        } else if let (Some(uploads), Some(authorization)) =
+            (uploads.clone(), basic_authorization.clone())
+        {
+            std::thread::spawn(move || {
+                relay_basic_uploads(client, upstream, &authorization, &uploads);
             });
         } else {
             splice(client, upstream);
@@ -181,7 +249,7 @@ pub(super) fn serve_tunnel(listener: TcpListener, target: Arc<Mutex<RelayTarget>
             continue;
         };
         std::thread::spawn(move || {
-            relay_authorized(client, upstream, None, &[], &target.authorization);
+            relay_authorized(client, upstream, None, &[], &target.authorization, None);
         });
     }
 }
@@ -194,16 +262,71 @@ enum RequestAction {
         head_request: bool,
         upgrade: bool,
     },
+    Upload {
+        content_length: u64,
+    },
     Unauthorized,
+    Forbidden,
+    LengthRequired,
+    MethodNotAllowed,
+    PayloadTooLarge,
     Close,
 }
 
+#[derive(Clone, Copy)]
+enum RequestAuth<'a> {
+    Basic {
+        authorization: &'a str,
+    },
+    Inject {
+        authorization: &'a str,
+    },
+    TrustedHeader {
+        required_header: &'a str,
+        allowed_users: &'a [String],
+        authorization: &'a str,
+    },
+}
+
 fn relay_authorized(
-    mut client: TcpStream,
-    mut upstream: TcpStream,
+    client: TcpStream,
+    upstream: TcpStream,
     required_header: Option<&str>,
     allowed_users: &[String],
     authorization: &str,
+    uploads: Option<&ImageUploadStore>,
+) {
+    let auth = required_header.map_or(RequestAuth::Inject { authorization }, |required_header| {
+        RequestAuth::TrustedHeader {
+            required_header,
+            allowed_users,
+            authorization,
+        }
+    });
+    relay_http(client, upstream, auth, uploads);
+}
+
+/// 保留普通 Basic Auth 请求，只在图片上传路径校验并消费请求体。
+fn relay_basic_uploads(
+    client: TcpStream,
+    upstream: TcpStream,
+    authorization: &str,
+    uploads: &ImageUploadStore,
+) {
+    relay_http(
+        client,
+        upstream,
+        RequestAuth::Basic { authorization },
+        Some(uploads),
+    );
+}
+
+/// 在同一 keep-alive 连接上分流 ttyd 请求和 RimZ 图片上传。
+fn relay_http(
+    mut client: TcpStream,
+    mut upstream: TcpStream,
+    auth: RequestAuth<'_>,
+    uploads: Option<&ImageUploadStore>,
 ) {
     let _ = client.set_nodelay(true);
     let _ = upstream.set_nodelay(true);
@@ -215,41 +338,130 @@ fn relay_authorized(
 
     loop {
         let action = match read_request_head(&mut client_read) {
-            Ok(Some(head)) => {
-                rewrite_request_head(&head, required_header, allowed_users, authorization)
-            }
+            Ok(Some(head)) => route_request_head(&head, auth, uploads.is_some()),
             Ok(None) => break,
             Err(_) => RequestAction::Close,
         };
-        let RequestAction::Forward {
-            head,
-            content_length,
-            head_request,
-            upgrade,
-        } = action
-        else {
-            if action == RequestAction::Unauthorized {
+        match action {
+            RequestAction::Forward {
+                head,
+                content_length,
+                head_request,
+                upgrade,
+            } => {
+                if upstream.write_all(&head).is_err()
+                    || copy_exact(&mut client_read, &mut upstream, content_length).is_err()
+                {
+                    break;
+                }
+                match relay_response(&mut upstream_read, &mut client, head_request, upgrade) {
+                    Ok(ResponseAction::NextRequest) => {}
+                    Ok(ResponseAction::Upgrade) => {
+                        splice_buffered(client_read, upstream_read, client, upstream);
+                        return;
+                    }
+                    Ok(ResponseAction::Close) | Err(_) => break,
+                }
+            }
+            RequestAction::Upload { content_length } => {
+                let Some(uploads) = uploads else {
+                    break;
+                };
+                if handle_image_upload(&mut client_read, &mut client, content_length, uploads)
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            RequestAction::Unauthorized => {
                 let _ = client.write_all(UNAUTHORIZED);
-                let _ = client.shutdown(Shutdown::Both);
+                break;
             }
-            break;
-        };
-        if upstream.write_all(&head).is_err()
-            || copy_exact(&mut client_read, &mut upstream, content_length).is_err()
-        {
-            break;
-        }
-        match relay_response(&mut upstream_read, &mut client, head_request, upgrade) {
-            Ok(ResponseAction::NextRequest) => {}
-            Ok(ResponseAction::Upgrade) => {
-                splice_buffered(client_read, upstream_read, client, upstream);
-                return;
+            RequestAction::Forbidden => {
+                let _ = client.write_all(FORBIDDEN);
+                break;
             }
-            Ok(ResponseAction::Close) | Err(_) => break,
+            RequestAction::LengthRequired => {
+                let _ = client.write_all(LENGTH_REQUIRED);
+                break;
+            }
+            RequestAction::MethodNotAllowed => {
+                let _ = client.write_all(METHOD_NOT_ALLOWED);
+                break;
+            }
+            RequestAction::PayloadTooLarge => {
+                let _ = client.write_all(PAYLOAD_TOO_LARGE);
+                break;
+            }
+            RequestAction::Close => break,
         }
     }
     let _ = upstream.shutdown(Shutdown::Write);
     let _ = client.shutdown(Shutdown::Read);
+}
+
+/// 读取受限请求体、保存图片并返回不可缓存的 JSON 路径。
+fn handle_image_upload(
+    reader: &mut impl Read,
+    client: &mut impl Write,
+    content_length: u64,
+    uploads: &ImageUploadStore,
+) -> io::Result<()> {
+    let length = usize::try_from(content_length)
+        .map_err(|_| invalid_http("image upload length exceeds this platform"))?;
+    let mut bytes = vec![0_u8; length];
+    reader.read_exact(&mut bytes)?;
+    match uploads.store(&bytes) {
+        Ok(path) => {
+            let path = path
+                .to_str()
+                .ok_or_else(|| invalid_http("image upload path is not UTF-8"))?;
+            let body = serde_json::to_vec(&serde_json::json!({
+                "path": path,
+            }))
+            .map_err(|err| invalid_http(format!("image upload response failed: {err}")))?;
+            write_json_response(client, 200, "OK", &body)
+        }
+        Err(ImageUploadErr::Empty) => {
+            write_json_response(client, 400, "Bad Request", br#"{"error":"empty_image"}"#)
+        }
+        Err(ImageUploadErr::TooLarge { .. }) => write_json_response(
+            client,
+            413,
+            "Content Too Large",
+            br#"{"error":"image_too_large"}"#,
+        ),
+        Err(ImageUploadErr::Unsupported) => write_json_response(
+            client,
+            415,
+            "Unsupported Media Type",
+            br#"{"error":"unsupported_image"}"#,
+        ),
+        Err(err) => {
+            tracing::warn!(error = %err, "browser image upload failed");
+            write_json_response(
+                client,
+                500,
+                "Internal Server Error",
+                br#"{"error":"image_store_failed"}"#,
+            )
+        }
+    }
+}
+
+/// 写出 keep-alive JSON 响应，供连续粘贴复用当前浏览器连接。
+fn write_json_response(
+    writer: &mut impl Write,
+    status: u16,
+    reason: &str,
+    body: &[u8],
+) -> io::Result<()> {
+    write!(
+        writer,
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )?;
+    writer.write_all(body)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -488,6 +700,18 @@ fn rewrite_request_head(
     allowed_users: &[String],
     authorization: &str,
 ) -> RequestAction {
+    let auth = required_header.map_or(RequestAuth::Inject { authorization }, |required_header| {
+        RequestAuth::TrustedHeader {
+            required_header,
+            allowed_users,
+            authorization,
+        }
+    });
+    route_request_head(head, auth, false)
+}
+
+/// 解析认证、上传路由和 ttyd 转发元数据，保持 Basic 请求字节不变。
+fn route_request_head(head: &[u8], auth: RequestAuth<'_>, image_paste: bool) -> RequestAction {
     let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
     let mut request = httparse::Request::new(&mut headers);
     let Ok(httparse::Status::Complete(parsed_len)) = request.parse(head) else {
@@ -500,7 +724,13 @@ fn rewrite_request_head(
     else {
         return RequestAction::Close;
     };
-    if let Some(required_header) = required_header {
+    let image_upload = image_paste && path == IMAGE_UPLOAD_PATH;
+    if let RequestAuth::TrustedHeader {
+        required_header,
+        allowed_users,
+        ..
+    } = auth
+    {
         let mut identity_header_count = 0_usize;
         let mut identity = None;
         for header in request.headers.iter() {
@@ -523,6 +753,21 @@ fn rewrite_request_head(
         {
             return RequestAction::Unauthorized;
         }
+    }
+    if image_upload
+        && let RequestAuth::Basic { authorization } = auth
+        && !single_header_matches(request.headers, "Authorization", authorization.as_bytes())
+    {
+        return RequestAction::Unauthorized;
+    }
+    if image_upload
+        && !single_header_matches(
+            request.headers,
+            IMAGE_UPLOAD_HEADER,
+            IMAGE_UPLOAD_HEADER_VALUE,
+        )
+    {
+        return RequestAction::Forbidden;
     }
 
     let mut content_length = None;
@@ -551,6 +796,35 @@ fn rewrite_request_head(
             upgrade = true;
         }
     }
+    if image_upload {
+        if !method.eq_ignore_ascii_case("POST") {
+            return RequestAction::MethodNotAllowed;
+        }
+        let Some(content_length) = content_length else {
+            return RequestAction::LengthRequired;
+        };
+        if content_length == 0 {
+            return RequestAction::LengthRequired;
+        }
+        if content_length > MAX_IMAGE_BYTES {
+            return RequestAction::PayloadTooLarge;
+        }
+        return RequestAction::Upload { content_length };
+    }
+
+    if matches!(auth, RequestAuth::Basic { .. }) {
+        return RequestAction::Forward {
+            head: head.to_vec(),
+            content_length: content_length.unwrap_or(0),
+            head_request: method.eq_ignore_ascii_case("HEAD"),
+            upgrade,
+        };
+    }
+    let authorization = match auth {
+        RequestAuth::Inject { authorization }
+        | RequestAuth::TrustedHeader { authorization, .. } => authorization,
+        RequestAuth::Basic { .. } => unreachable!("basic requests return before rewriting"),
+    };
     let mut rewritten = Vec::with_capacity(head.len() + authorization.len() + 24);
     let _ = write!(rewritten, "{method} {path} HTTP/1.{version}\r\n");
     for header in request.headers.iter() {
@@ -568,6 +842,30 @@ fn rewrite_request_head(
         head_request: method.eq_ignore_ascii_case("HEAD"),
         upgrade,
     }
+}
+
+/// 要求敏感认证头只出现一次，并用固定工作量比较其字节。
+fn single_header_matches(headers: &[httparse::Header<'_>], name: &str, expected: &[u8]) -> bool {
+    let mut matches = headers
+        .iter()
+        .filter(|header| header.name.eq_ignore_ascii_case(name));
+    let Some(header) = matches.next() else {
+        return false;
+    };
+    matches.next().is_none() && constant_time_eq(trim_ascii(header.value), expected)
+}
+
+/// 比较等长凭据，避免从首个不同字节泄漏明显的时间差。
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (*left ^ *right)
+        })
+        == 0
 }
 
 fn trim_ascii(mut value: &[u8]) -> &[u8] {
@@ -668,6 +966,8 @@ mod tests {
         assert!(peer_allowed("::1".parse().expect("IP"), &[]));
         assert!(peer_allowed("::ffff:127.0.0.1".parse().expect("IP"), &[]));
         assert!(peer_allowed("::ffff:10.2.3.4".parse().expect("IP"), &allow));
+        assert!(peer_admitted("192.0.2.1".parse().expect("IP"), &[], false));
+        assert!(!peer_admitted("192.0.2.1".parse().expect("IP"), &[], true));
     }
 
     #[test]
@@ -698,6 +998,94 @@ mod tests {
                 b"POST / HTTP/1.1\r\nX-Forwarded-User: alice\r\nTransfer-Encoding: chunked\r\n\r\n",
             ),
             RequestAction::Close
+        );
+    }
+
+    #[test]
+    fn basic_image_upload_requires_the_exact_single_credential() {
+        let authorization = auth().authorization;
+        let route = |head: &[u8]| {
+            route_request_head(
+                head,
+                RequestAuth::Basic {
+                    authorization: &authorization,
+                },
+                true,
+            )
+        };
+
+        assert_eq!(
+            route(
+                b"POST /__rimz/upload/image HTTP/1.1\r\nAuthorization: Basic cmltejphYmNk\r\nX-RimZ-Upload: image\r\nContent-Length: 12\r\n\r\n"
+            ),
+            RequestAction::Upload { content_length: 12 }
+        );
+        for head in [
+            &b"POST /__rimz/upload/image HTTP/1.1\r\nContent-Length: 12\r\n\r\n"[..],
+            &b"POST /__rimz/upload/image HTTP/1.1\r\nAuthorization: Basic wrong\r\nContent-Length: 12\r\n\r\n"[..],
+            &b"POST /__rimz/upload/image HTTP/1.1\r\nAuthorization: Basic cmltejphYmNk\r\nAuthorization: Basic cmltejphYmNk\r\nContent-Length: 12\r\n\r\n"[..],
+        ] {
+            assert_eq!(route(head), RequestAction::Unauthorized);
+        }
+        assert_eq!(
+            route(
+                b"POST /__rimz/upload/image HTTP/1.1\r\nAuthorization: Basic cmltejphYmNk\r\nContent-Length: 12\r\n\r\n"
+            ),
+            RequestAction::Forbidden
+        );
+
+        let ordinary = b"GET / HTTP/1.1\r\nHost: local\r\n\r\n";
+        assert!(matches!(
+            route(ordinary),
+            RequestAction::Forward { head, .. } if head == ordinary
+        ));
+    }
+
+    #[test]
+    fn image_upload_rejects_wrong_methods_and_unbounded_bodies() {
+        let authorization = auth().authorization;
+        let route = |head: &[u8]| {
+            route_request_head(
+                head,
+                RequestAuth::Basic {
+                    authorization: &authorization,
+                },
+                true,
+            )
+        };
+        assert_eq!(
+            route(
+                b"GET /__rimz/upload/image HTTP/1.1\r\nAuthorization: Basic cmltejphYmNk\r\nX-RimZ-Upload: image\r\n\r\n"
+            ),
+            RequestAction::MethodNotAllowed
+        );
+        assert_eq!(
+            route(
+                b"POST /__rimz/upload/image HTTP/1.1\r\nAuthorization: Basic cmltejphYmNk\r\nX-RimZ-Upload: image\r\n\r\n"
+            ),
+            RequestAction::LengthRequired
+        );
+        let oversized = format!(
+            "POST {IMAGE_UPLOAD_PATH} HTTP/1.1\r\nAuthorization: Basic cmltejphYmNk\r\nX-RimZ-Upload: image\r\nContent-Length: {}\r\n\r\n",
+            MAX_IMAGE_BYTES + 1
+        );
+        assert_eq!(route(oversized.as_bytes()), RequestAction::PayloadTooLarge);
+    }
+
+    #[test]
+    fn trusted_header_auth_can_route_image_uploads() {
+        let auth = auth();
+        assert_eq!(
+            route_request_head(
+                b"POST /__rimz/upload/image HTTP/1.1\r\nX-Forwarded-User: alice\r\nX-RimZ-Upload: image\r\nContent-Length: 8\r\n\r\n",
+                RequestAuth::TrustedHeader {
+                    required_header: &auth.header_name,
+                    allowed_users: &auth.allowed_users,
+                    authorization: &auth.authorization,
+                },
+                true,
+            ),
+            RequestAction::Upload { content_length: 8 }
         );
     }
 
@@ -784,6 +1172,7 @@ mod tests {
                 Some(&auth.header_name),
                 &auth.allowed_users,
                 &auth.authorization,
+                None,
             );
         });
         client
@@ -813,6 +1202,7 @@ mod tests {
                 Some(&auth.header_name),
                 &auth.allowed_users,
                 &auth.authorization,
+                None,
             );
         });
         let upstream_thread = std::thread::spawn(move || {
@@ -857,7 +1247,14 @@ mod tests {
         let (mut client, gate_client) = tcp_pair();
         let (gate_upstream, mut upstream) = tcp_pair();
         let gate = std::thread::spawn(move || {
-            relay_authorized(gate_client, gate_upstream, None, &[], &auth().authorization);
+            relay_authorized(
+                gate_client,
+                gate_upstream,
+                None,
+                &[],
+                &auth().authorization,
+                None,
+            );
         });
         let upstream_thread = std::thread::spawn(move || {
             let mut reader = BufReader::new(upstream.try_clone().expect("clone upstream"));
@@ -898,6 +1295,7 @@ mod tests {
                 Some(&auth.header_name),
                 &auth.allowed_users,
                 &auth.authorization,
+                None,
             );
         });
         let upstream_thread = std::thread::spawn(move || {
@@ -952,7 +1350,14 @@ mod tests {
         let (gate_upstream, mut upstream) = tcp_pair();
         let (sent, received) = mpsc::channel();
         let gate = std::thread::spawn(move || {
-            relay_authorized(gate_client, gate_upstream, None, &[], &auth().authorization);
+            relay_authorized(
+                gate_client,
+                gate_upstream,
+                None,
+                &[],
+                &auth().authorization,
+                None,
+            );
         });
         let upstream_thread = std::thread::spawn(move || {
             let mut reader = BufReader::new(upstream.try_clone().expect("clone upstream"));

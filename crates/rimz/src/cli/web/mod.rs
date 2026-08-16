@@ -55,12 +55,16 @@ enum WebSubcmd {
         listen: SocketAddr,
         #[arg(long)]
         upstream: SocketAddr,
+        #[arg(long)]
+        tunnel_listen: Option<SocketAddr>,
         #[arg(long = "allow")]
         allow: Vec<String>,
         #[arg(long)]
         auth_header: Option<String>,
         #[arg(long = "auth-user")]
         auth_users: Vec<String>,
+        #[arg(long)]
+        image_paste: bool,
     },
 }
 
@@ -177,9 +181,11 @@ pub fn run(args: WebArgs, globals: &GlobalFlags) -> Result<()> {
         WebSubcmd::Gate {
             listen,
             upstream,
+            tunnel_listen,
             allow,
             auth_header,
             auth_users,
+            image_paste,
         } => {
             let auth = auth_header
                 .map(|header_name| -> rimz::web::Result<_> {
@@ -190,7 +196,8 @@ pub fn run(args: WebArgs, globals: &GlobalFlags) -> Result<()> {
                     })
                 })
                 .transpose()?;
-            rimz::web::serve_gate(listen, upstream, &allow, auth).map_err(Into::into)
+            rimz::web::serve_gate(listen, upstream, tunnel_listen, &allow, auth, image_paste)
+                .map_err(Into::into)
         }
     }
 }
