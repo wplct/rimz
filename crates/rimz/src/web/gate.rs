@@ -694,6 +694,7 @@ fn read_request_head(reader: &mut impl BufRead) -> io::Result<Option<Vec<u8>>> {
     }
 }
 
+#[cfg(test)]
 fn rewrite_request_head(
     head: &[u8],
     required_header: Option<&str>,

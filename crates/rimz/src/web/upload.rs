@@ -171,10 +171,10 @@ fn system_upload_root() -> Result<PathBuf> {
     })?;
     #[cfg(unix)]
     {
-        return Ok(temp.join(format!(
+        Ok(temp.join(format!(
             "rimz-web-images-{}",
             nix::unistd::Uid::current().as_raw()
-        )));
+        )))
     }
     #[cfg(not(unix))]
     Ok(temp.join("rimz-web-images"))

@@ -311,9 +311,11 @@ fn client_bootstrap(family: Option<&str>, image_paste: bool) -> String {
     let ws_url = include_str!("ws_url.js");
     let pixel_layer = include_str!("pixel_layer.js");
     let input_guard = include_str!("input_guard.js");
-    let image_paste_script = image_paste
-        .then(|| include_str!("image_paste.js"))
-        .unwrap_or("");
+    let image_paste_script = if image_paste {
+        include_str!("image_paste.js")
+    } else {
+        ""
+    };
     let install_image_paste = image_paste
         .then_some("installImagePaste(term);")
         .unwrap_or("");
