@@ -254,6 +254,77 @@ fn parent_stamped_observation_cannot_reparent_or_release_existing_roots() {
 }
 
 #[test]
+fn explicit_root_registration_clears_stale_child_lineage() {
+    let child = raw_lifecycle(
+        "pi",
+        serde_json::json!({
+            "event_name": "subagent_started",
+            "agent_id": "resumed-session",
+            "parent_agent_id": "temporary-session",
+            "task": "resume lane",
+            "signal": { "signal": "subagent_started" },
+        }),
+    );
+    let promoted = raw_lifecycle(
+        "pi",
+        serde_json::json!({
+            "event_name": "session_start",
+            "agent_id": "resumed-session",
+            "explicit_root": true,
+            "signal": { "signal": "registered" },
+        }),
+    );
+
+    let promotion_events = [child, promoted];
+    let events = decode_events(&promotion_events);
+    let (agents, identity) = reduce_agent_states_seeded_with_identity(
+        BTreeMap::new(),
+        AgentIdentityState::default(),
+        &events,
+    );
+    let resumed = agents
+        .values()
+        .find(|agent| agent.agent_id == "resumed-session")
+        .expect("resumed session");
+    assert_eq!(resumed.parent_agent_id, None);
+    let name = resumed.name.as_deref().expect("resumed root name");
+    assert_eq!(
+        identity.names[name].1.as_str(),
+        "resumed-session",
+        "promoted roots own their card identity instead of retaining child-only naming",
+    );
+}
+
+#[test]
+fn legacy_registration_preserves_established_child_lineage() {
+    let child = raw_lifecycle(
+        "pi",
+        serde_json::json!({
+            "event_name": "subagent_started",
+            "agent_id": "child-session",
+            "parent_agent_id": "root-session",
+            "task": "review lane",
+            "signal": { "signal": "subagent_started" },
+        }),
+    );
+    let legacy_registration = raw_lifecycle(
+        "pi",
+        serde_json::json!({
+            "event_name": "session_start",
+            "agent_id": "child-session",
+            "signal": { "signal": "registered" },
+        }),
+    );
+
+    let agents = reduce_agent_states(&[child, legacy_registration]);
+    let child = agents
+        .iter()
+        .find(|agent| agent.agent_id == "child-session")
+        .expect("child session");
+    assert_eq!(child.parent_agent_id.as_deref(), Some("root-session"));
+}
+
+#[test]
 fn subagent_adoption_attaches_an_existing_root_once() {
     let root = raw_lifecycle(
         "antigravity",

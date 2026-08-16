@@ -3,6 +3,10 @@
 //! the same exported factory through Node and captures the `rimz hooks feed`
 //! envelopes it would spawn.
 
+use serde_json::{Value, json};
+
+use crate::common::Env;
+
 #[test]
 #[cfg(unix)]
 fn extension_tracks_settled_boundary_cost_and_child_lineage() {
@@ -81,6 +85,8 @@ import fs from "node:fs/promises";
 
 process.env.RIMZ_BIN = {};
 process.env.RIMZ_CAPTURE = {};
+delete process.env.RIMZ_PI_PARENT_SESSION;
+delete process.env.PI_SUBAGENT_CHILD_AGENT;
 const boundaryEvent = {};
 const absentEvent = {};
 const hasNativeSettled = {};
@@ -157,9 +163,15 @@ handlers.get("agent_end")({{
     usage: {{ totalTokens: 20, cost: {{ total: 0.25 }} }},
   }}],
 }}, ctx);
-handlers.get("session_shutdown")({{ reason: "new" }}, ctx);
+handlers.get("session_shutdown")({{ reason: "resume" }}, ctx);
 rootSessionId = "sess-2";
-handlers.get("session_start")({{ reason: "new" }}, ctx);
+const {{
+  pi: resumedPi,
+  handlers: resumedHandlers,
+  busHandlers: resumedBusHandlers,
+}} = makePi();
+rimz(resumedPi);
+resumedHandlers.get("session_start")({{ reason: "resume" }}, ctx);
 if (globalThis[Symbol.for("rimz.pi.primary-session")]?.id !== "sess-2" ||
     process.env.RIMZ_PI_PARENT_SESSION !== "sess-2") {{
   throw new Error("primary markers did not follow the rotated session");
@@ -173,10 +185,10 @@ childHandlers.get("agent_end")({{
   }}],
 }}, childCtx);
 if (hasNativeSettled) childHandlers.get("agent_settled")({{}}, childCtx);
-handlers.get("session_shutdown")({{ reason: "quit" }}, ctx);
-if (busHandlers.size !== 0 || childBusHandlers.size !== 0) {{
-  throw new Error("extension registered plugin bus handlers");
-}}
+resumedHandlers.get("session_shutdown")({{ reason: "quit" }}, ctx);
+if (busHandlers.size !== 0 || resumedBusHandlers.size !== 0 || childBusHandlers.size !== 0) {{
+      throw new Error("extension registered plugin bus handlers");
+    }}
 
 delete globalThis[Symbol.for("rimz.pi.primary-session")];
 process.env.RIMZ_PI_PARENT_SESSION = "env-parent";
@@ -194,7 +206,51 @@ if (globalThis[Symbol.for("rimz.pi.primary-session")]?.id !== "sess-subprocess" 
     process.env.RIMZ_PI_PARENT_SESSION !== "sess-subprocess") {{
   throw new Error("subprocess child did not claim its own process markers");
 }}
-subprocessHandlers.get("session_shutdown")({{ reason: "quit" }}, subprocessCtx);
+subprocessHandlers.get("session_shutdown")({{ reason: "resume" }}, subprocessCtx);
+const {{
+  pi: resumedSubprocessPi,
+  handlers: resumedSubprocessHandlers,
+  busHandlers: resumedSubprocessBusHandlers,
+}} = makePi();
+const resumedSubprocessCtx = {{
+  sessionManager: {{
+    getSessionId: () => "sess-subprocess-resumed",
+    getCwd: () => "/repo/subprocess",
+  }},
+}};
+rimz(resumedSubprocessPi);
+resumedSubprocessHandlers.get("session_start")({{ reason: "resume" }}, resumedSubprocessCtx);
+resumedSubprocessHandlers.get("session_shutdown")({{ reason: "quit" }}, resumedSubprocessCtx);
+if (resumedSubprocessBusHandlers.size !== 0) {{
+  throw new Error("resumed child registered plugin bus handlers");
+}}
+
+delete process.env.PI_SUBAGENT_CHILD_AGENT;
+globalThis[Symbol.for("rimz.pi.primary-session")] = {{ id: "sess-legacy-root" }};
+process.env.RIMZ_PI_PARENT_SESSION = "sess-legacy-root";
+const {{ pi: reloadPi, handlers: reloadHandlers }} = makePi();
+const reloadCtx = {{
+  sessionManager: {{
+    getSessionId: () => "sess-legacy-root",
+    getCwd: () => "/repo/reload",
+  }},
+}};
+rimz(reloadPi);
+reloadHandlers.get("session_start")({{ reason: "reload" }}, reloadCtx);
+
+process.env.PI_SUBAGENT_CHILD_AGENT = "reviewer";
+globalThis[Symbol.for("rimz.pi.primary-session")] = {{ id: "sess-legacy-child" }};
+process.env.RIMZ_PI_PARENT_SESSION = "sess-legacy-child";
+const {{ pi: legacyChildPi, handlers: legacyChildHandlers }} = makePi();
+const legacyChildCtx = {{
+  sessionManager: {{
+    getSessionId: () => "sess-legacy-child",
+    getCwd: () => "/repo/legacy-child",
+  }},
+}};
+rimz(legacyChildPi);
+legacyChildHandlers.get("session_start")({{ reason: "reload" }}, legacyChildCtx);
+delete process.env.PI_SUBAGENT_CHILD_AGENT;
 
 const readPayloads = async () => {{
   try {{
@@ -206,18 +262,63 @@ const readPayloads = async () => {{
 }};
 
 let payloads = [];
-const expectedPayloads = hasNativeSettled ? 17 : 16;
+const requiredSessionIds = [
+  "sess-1",
+  "sess-2",
+  "sess-child",
+  "sess-subprocess",
+  "sess-subprocess-resumed",
+  "sess-legacy-root",
+  "sess-legacy-child",
+];
+const requiredChildIds = ["sess-child", "sess-subprocess", "sess-subprocess-resumed"];
+const payloadsComplete = (items) => {{
+  const sessionIds = new Set(items
+    .filter((payload) => payload.hook_event_name === "session_start")
+    .map((payload) => payload.session_id));
+  const childStartIds = new Set(items
+    .filter((payload) => payload.hook_event_name === "subagent_started")
+    .map((payload) => payload.subagent_id));
+  const childStopIds = new Set(items
+    .filter((payload) => payload.hook_event_name === "subagent_stopped")
+    .map((payload) => payload.subagent_id));
+  return requiredSessionIds.every((id) => sessionIds.has(id)) &&
+    requiredChildIds.every((id) => childStartIds.has(id) && childStopIds.has(id)) &&
+    items.some((payload) => payload.hook_event_name === boundaryEvent);
+}};
 for (let i = 0; i < 250; i += 1) {{
   payloads = await readPayloads();
-  if (payloads.length >= expectedPayloads) break;
+  if (payloadsComplete(payloads)) break;
   await new Promise((resolve) => setTimeout(resolve, 20));
 }}
-if (payloads.length < expectedPayloads) {{
-  throw new Error(`expected ${{expectedPayloads}} forwarded payloads, got ${{payloads.length}}`);
+if (!payloadsComplete(payloads)) {{
+  throw new Error(`missing required forwarded payloads: ${{JSON.stringify(payloads)}}`);
 }}
 const rootPayloads = payloads.filter((payload) =>
   payload.session_id === "sess-1" && !payload.hook_event_name.startsWith("subagent_"));
 const byEvent = Object.fromEntries(rootPayloads.map((payload) => [payload.hook_event_name, payload]));
+const sessionStarts = payloads.filter((payload) => payload.hook_event_name === "session_start");
+const sessionStart = (id) => sessionStarts.find((payload) => payload.session_id === id);
+for (const id of ["sess-1", "sess-2", "sess-legacy-root"]) {{
+  const payload = sessionStart(id);
+  if (payload?.session_lineage !== "root" || "parent_session_id" in payload) {{
+    throw new Error(`root session lineage was ${{JSON.stringify(payload)}}`);
+  }}
+}}
+for (const [id, parentId] of [
+  ["sess-child", "sess-2"],
+  ["sess-subprocess", "env-parent"],
+  ["sess-subprocess-resumed", "env-parent"],
+]) {{
+  const payload = sessionStart(id);
+  if (payload?.session_lineage !== "child" || payload.parent_session_id !== parentId) {{
+    throw new Error(`child session lineage was ${{JSON.stringify(payload)}}`);
+  }}
+}}
+const legacyChildPayload = sessionStart("sess-legacy-child");
+if ("session_lineage" in legacyChildPayload || "parent_session_id" in legacyChildPayload) {{
+  throw new Error(`legacy child reload invented lineage: ${{JSON.stringify(legacyChildPayload)}}`);
+}}
 if (byEvent.tool_call?.tool_call_id !== "ask-call") {{
   throw new Error(`tool_call lost correlation: ${{JSON.stringify(byEvent.tool_call)}}`);
 }}
@@ -242,7 +343,7 @@ if ("total_cost_usd" in byEvent.session_shutdown) {{
 }}
 const childStarts = payloads.filter((payload) => payload.hook_event_name === "subagent_started");
 const childStops = payloads.filter((payload) => payload.hook_event_name === "subagent_stopped");
-if (childStarts.length !== 2 || childStops.length !== 2) {{
+if (childStarts.length !== 3 || childStops.length !== 3) {{
   throw new Error(`primary sessions self-reported or a child feed was lost: ${{JSON.stringify({{ childStarts, childStops }})}}`);
 }}
 for (const child of [...childStarts, ...childStops]) {{
@@ -260,9 +361,17 @@ if (inProcessStart?.session_id !== "sess-2" ||
 }}
 const subprocessStart = childStarts.find((child) => child.subagent_id === "sess-subprocess");
 const subprocessStop = childStops.find((child) => child.subagent_id === "sess-subprocess");
-if (subprocessStart?.session_id !== "env-parent" || subprocessStart.subagent_label !== "reviewer" ||
+if (subprocessStart?.session_id !== "env-parent" ||
+    subprocessStart.subagent_label !== "reviewer" ||
     subprocessStop?.errored !== false) {{
   throw new Error(`subprocess child self-identification was ${{JSON.stringify({{ subprocessStart, subprocessStop }})}}`);
+}}
+const resumedSubprocessStart = childStarts.find((child) => child.subagent_id === "sess-subprocess-resumed");
+const resumedSubprocessStop = childStops.find((child) => child.subagent_id === "sess-subprocess-resumed");
+if (resumedSubprocessStart?.session_id !== "env-parent" ||
+    resumedSubprocessStart.subagent_label !== "reviewer" ||
+    resumedSubprocessStop?.errored !== false) {{
+  throw new Error(`resumed subprocess child self-identification was ${{JSON.stringify({{ resumedSubprocessStart, resumedSubprocessStop }})}}`);
 }}
 "#,
             serde_json::to_string(stub_path.to_str().unwrap()).unwrap(),
@@ -286,4 +395,79 @@ if (subprocessStart?.session_id !== "env-parent" || subprocessStart.subagent_lab
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+
+    let payloads = std::fs::read_to_string(&capture_path)
+        .expect("read captured Pi extension payloads")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("captured payload JSON"))
+        .collect::<Vec<_>>();
+    let resume_payload = payloads
+        .iter()
+        .find(|payload| {
+            payload["hook_event_name"] == "session_start" && payload["session_id"] == "sess-2"
+        })
+        .expect("rebound resume session_start payload");
+    assert_eq!(resume_payload["session_lineage"], "root");
+    let legacy_child_payload = payloads
+        .iter()
+        .find(|payload| {
+            payload["hook_event_name"] == "session_start"
+                && payload["session_id"] == "sess-legacy-child"
+        })
+        .expect("legacy child reload session_start payload");
+    assert!(legacy_child_payload.get("session_lineage").is_none());
+    assert!(legacy_child_payload.get("parent_session_id").is_none());
+
+    let env = Env::new();
+    let legacy_stale_child = json!({
+        "hook_event_name": "subagent_started",
+        "session_id": "temporary-session",
+        "subagent_id": "sess-legacy-child",
+        "subagent_label": "legacy child",
+        "subagent_source": "pi-session",
+        "cwd": env.project_root.clone(),
+    });
+    for payload in [&legacy_stale_child, legacy_child_payload] {
+        let output = env.run_hook("pi", &payload.to_string());
+        assert!(
+            output.status.success(),
+            "pi hook failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.is_empty(), "pi lifecycle hook is silent");
+    }
+    let snapshot = env.snapshot_json();
+    let preserved = snapshot["agents"]
+        .as_array()
+        .expect("agents")
+        .iter()
+        .find(|agent| agent["agent_id"] == "sess-legacy-child")
+        .expect("preserved legacy Pi child row");
+    assert_eq!(preserved["parent_agent_id"], "temporary-session");
+
+    let stale_child = json!({
+        "hook_event_name": "subagent_started",
+        "session_id": "temporary-session",
+        "subagent_id": "sess-2",
+        "subagent_label": "resumed lane",
+        "subagent_source": "pi-session",
+        "cwd": env.project_root.clone(),
+    });
+    for payload in [&stale_child, resume_payload] {
+        let output = env.run_hook("pi", &payload.to_string());
+        assert!(
+            output.status.success(),
+            "pi hook failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.is_empty(), "pi lifecycle hook is silent");
+    }
+    let snapshot = env.snapshot_json();
+    let repaired = snapshot["agents"]
+        .as_array()
+        .expect("agents")
+        .iter()
+        .find(|agent| agent["agent_id"] == "sess-2")
+        .expect("repaired Pi root row");
+    assert_eq!(repaired["parent_agent_id"], Value::Null);
 }
