@@ -8,12 +8,18 @@ for upstream adoption whenever they solve a general RimZ problem.
 
 - `main` mirrors `rimio-ai/rimz:main`. Do not land fork-specific commits on it.
 - `custom` is the fork's default integration branch and the source of fork builds.
-- Start each change on a focused `feat/*`, `fix/*`, or `chore/*` branch from the
-  latest `main`.
+- Start upstream-worthy product changes on a focused `feat/*` or `fix/*` branch
+  from the latest `main`. Start fork-only policy and infrastructure changes on a
+  `chore/*` branch from `custom`.
 - Merge changes into `custom` through pull requests. Bring upstream updates from
   `main` into `custom` through a pull request as well.
-- Submit generally useful changes to `rimio-ai/rimz:main` from the same clean feature
-  branch. Keep fork-only workflow and policy commits out of upstream pull requests.
+- For an upstream-worthy change, open two pull requests from the same clean feature
+  branch: one to `wplct/rimz:custom`, which we review and merge after its required
+  checks pass, and one to `rimio-ai/rimz:main`, which upstream maintainers alone
+  decide whether and when to merge.
+- Keep a dual-PR feature branch until its upstream pull request is merged or closed.
+  Never use `custom` as an upstream pull-request head, and keep fork-only workflow
+  and policy commits out of upstream pull requests.
 - Build distributable Linux x86_64 binaries in GitHub Actions. Do not commit local
   build outputs or treat an unverified local binary as a release artifact.
 - Preserve RimZ's product invariants, durable-state contracts, and tmux/Zellij
