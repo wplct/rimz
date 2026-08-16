@@ -1,0 +1,58 @@
+name: Fork Linux build
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [custom]
+  push:
+    branches: [custom]
+
+concurrency:
+  group: fork-linux-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "5"
+  CARGO_HTTP_TIMEOUT: "120"
+  CARGO_TARGET_DIR: target/fork-linux
+  RUSTFLAGS: -D warnings
+
+jobs:
+  build:
+    name: Build Linux x86_64 artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Cache Cargo inputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target/fork-linux"
+          shared-key: fork-linux-x86_64
+
+      - name: Build release binary
+        run: cargo build --locked --release -p rimz
+
+      - name: Stage artifact
+        run: |
+          install -Dm755 target/fork-linux/release/rimz dist/rimz
+          dist/rimz --version
+          sha256sum dist/rimz > dist/rimz.sha256
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rimz-linux-x86_64-${{ github.sha }}
+          path: |
+            dist/rimz
+            dist/rimz.sha256
+          if-no-files-found: error
+          retention-days: 14

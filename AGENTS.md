@@ -1,5 +1,25 @@
 # AGENTS.md
 
+## Fork project goals
+
+This fork exists to deliver production-ready RimZ improvements without becoming an
+unmergeable downstream. Keep changes reviewable, independently testable, and shaped
+for upstream adoption whenever they solve a general RimZ problem.
+
+- `main` mirrors `rimio-ai/rimz:main`. Do not land fork-specific commits on it.
+- `custom` is the fork's default integration branch and the source of fork builds.
+- Start each change on a focused `feat/*`, `fix/*`, or `chore/*` branch from the
+  latest `main`.
+- Merge changes into `custom` through pull requests. Bring upstream updates from
+  `main` into `custom` through a pull request as well.
+- Submit generally useful changes to `rimio-ai/rimz:main` from the same clean feature
+  branch. Keep fork-only workflow and policy commits out of upstream pull requests.
+- Build distributable Linux x86_64 binaries in GitHub Actions. Do not commit local
+  build outputs or treat an unverified local binary as a release artifact.
+- Preserve RimZ's product invariants, durable-state contracts, and tmux/Zellij
+  parity. Prefer configurable, upstream-compatible behavior over permanent private
+  patches.
+
 > **Invariant.** RimZ routes attention: it surfaces which agent needs you and takes you straight to its pane, where you answer in the agent's own UI.
 
 ## How to read this contract
