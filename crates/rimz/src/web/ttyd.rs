@@ -1913,7 +1913,8 @@ mod tests {
 
     #[test]
     fn daemon_reuse_requires_context_marker_and_generated_index_key() {
-        let config = MachineConfig::default();
+        let mut config = MachineConfig::default();
+        config.web.image_paste = false;
         let desired = desired_spec(&config).expect("desired daemon");
         let mut daemon = WritableDaemonRecord::basic_loopback(42, config.web.port);
         daemon.image_paste = desired.image_paste;

@@ -316,9 +316,11 @@ fn client_bootstrap(family: Option<&str>, image_paste: bool) -> String {
     } else {
         ""
     };
-    let install_image_paste = image_paste
-        .then_some("installImagePaste(term);")
-        .unwrap_or("");
+    let install_image_paste = if image_paste {
+        "installImagePaste(term);"
+    } else {
+        ""
+    };
     let pixel_protocol = crate::web::TTYD_PIXEL_PROTOCOL;
     let session_osc = crate::web::TTYD_SESSION_OSC;
     let placeholder = u32::from(PLACEHOLDER);
