@@ -110,8 +110,24 @@ fn extension_source_wires_every_catalog_event() {
             "primary-session identification",
         ),
         (
-            "!isPrimary && id && parentId && parentId !== id",
-            "the child admission rule mirroring subagent quarantine",
+            "session_lineage: sessionLineage",
+            "the explicit root-versus-child session registration",
+        ),
+        (
+            "parent_session_id: childParentId",
+            "the child registration's durable parent identity",
+        ),
+        (
+            "SESSION_REPLACEMENT_REASONS.has(replacementReason)",
+            "Pi-native session replacement classification",
+        ),
+        (
+            "ev?.previousSessionFile",
+            "the previous-session half of replacement handoff correlation",
+        ),
+        (
+            "ev?.targetSessionFile",
+            "the target-session half of replacement handoff correlation",
         ),
         (
             "process.env.PI_SUBAGENT_CHILD_AGENT",
@@ -123,7 +139,7 @@ fn extension_source_wires_every_catalog_event() {
             r#"subagent_source: "pi-session""#,
             "the subagent source discriminator",
         ),
-        (r#"ev?.reason === "reload""#, "the `/reload` shutdown skip"),
+        (r#"reason === "reload""#, "the `/reload` shutdown skip"),
         ("block: true", "the awaited pre-tool gate"),
     ] {
         assert!(

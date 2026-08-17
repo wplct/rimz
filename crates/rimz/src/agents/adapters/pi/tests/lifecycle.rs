@@ -222,6 +222,48 @@ fn observation_carries_prompt_model_effort_and_usage() {
     assert_eq!(settled.usage.output_tokens, Some(20));
 }
 
+#[test]
+fn session_start_carries_explicit_process_lineage() {
+    let root = observe(
+        "session_start",
+        &json!({
+            "session_id": "sess-root",
+            "session_lineage": "root",
+        }),
+    );
+    assert!(root.explicit_root);
+    assert_eq!(root.parent_agent_id, None);
+
+    let child = observe(
+        "session_start",
+        &json!({
+            "session_id": "sess-child",
+            "session_lineage": "child",
+            "parent_session_id": "sess-root",
+        }),
+    );
+    assert!(!child.explicit_root);
+    assert_eq!(child.parent_agent_id.as_deref(), Some("sess-root"));
+
+    let legacy = observe("session_start", &json!({ "session_id": "sess-legacy" }));
+    assert!(!legacy.explicit_root);
+    assert_eq!(legacy.parent_agent_id, None);
+
+    let unknown = observe(
+        "session_start",
+        &json!({
+            "session_id": "sess-future",
+            "session_lineage": "detached",
+            "model": "gpt-future",
+            "total_tokens": 42,
+        }),
+    );
+    assert!(!unknown.explicit_root);
+    assert_eq!(unknown.parent_agent_id, None);
+    assert_eq!(unknown.launch.model.as_deref(), Some("gpt-future"));
+    assert_eq!(unknown.usage.total_tokens, Some(42));
+}
+
 /// Regression, `9acad2888 fix(pi): follow final settled lifecycle`. Supervised
 /// runs complete on the final message, so taking it from `agent_end` truncated
 /// the run before pi had finished.
