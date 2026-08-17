@@ -85,7 +85,9 @@ import fs from "node:fs/promises";
 
 process.env.RIMZ_BIN = {};
 process.env.RIMZ_CAPTURE = {};
-delete process.env.RIMZ_PI_PARENT_SESSION;
+// A long-lived mux server can leak an unrelated Pi parent's environment into
+// a root shell. Direct --session startup and later /resume must remain roots.
+process.env.RIMZ_PI_PARENT_SESSION = "sess-stale-mux-parent";
 delete process.env.PI_SUBAGENT_CHILD_AGENT;
 const boundaryEvent = {};
 const absentEvent = {};
@@ -114,17 +116,22 @@ const {{
   busHandlers: childBusHandlers,
 }} = makePi();
 let rootSessionId = "sess-1";
+let rootSessionFile = "/sessions/sess-1.jsonl";
 const ctx = {{
   sessionManager: {{
     getSessionId: () => rootSessionId,
+    getSessionFile: () => rootSessionFile,
     getCwd: () => "/repo",
   }},
   getContextUsage: () => ({{ percent: 45, contextWindow: 1000, tokens: 450 }}),
   model: {{ id: "gpt-5" }},
 }};
+let childSessionId = "sess-child";
+let childSessionFile = "/sessions/sess-child.jsonl";
 const childCtx = {{
   sessionManager: {{
-    getSessionId: () => "sess-child",
+    getSessionId: () => childSessionId,
+    getSessionFile: () => childSessionFile,
     getCwd: () => "/repo",
     getBranch: () => [{{ type: "session_info", name: "general-purpose#abc123" }}],
   }},
@@ -163,15 +170,22 @@ handlers.get("agent_end")({{
     usage: {{ totalTokens: 20, cost: {{ total: 0.25 }} }},
   }}],
 }}, ctx);
-handlers.get("session_shutdown")({{ reason: "resume" }}, ctx);
+handlers.get("session_shutdown")({{
+  reason: "resume",
+  targetSessionFile: "/sessions/sess-2.jsonl",
+}}, ctx);
 rootSessionId = "sess-2";
+rootSessionFile = "/sessions/sess-2.jsonl";
 const {{
   pi: resumedPi,
   handlers: resumedHandlers,
   busHandlers: resumedBusHandlers,
 }} = makePi();
 rimz(resumedPi);
-resumedHandlers.get("session_start")({{ reason: "resume" }}, ctx);
+resumedHandlers.get("session_start")({{
+  reason: "resume",
+  previousSessionFile: "/sessions/sess-1.jsonl",
+}}, ctx);
 if (globalThis[Symbol.for("rimz.pi.primary-session")]?.id !== "sess-2" ||
     process.env.RIMZ_PI_PARENT_SESSION !== "sess-2") {{
   throw new Error("primary markers did not follow the rotated session");
@@ -185,8 +199,43 @@ childHandlers.get("agent_end")({{
   }}],
 }}, childCtx);
 if (hasNativeSettled) childHandlers.get("agent_settled")({{}}, childCtx);
-resumedHandlers.get("session_shutdown")({{ reason: "quit" }}, ctx);
-if (busHandlers.size !== 0 || resumedBusHandlers.size !== 0 || childBusHandlers.size !== 0) {{
+resumedHandlers.get("session_shutdown")({{
+  reason: "resume",
+  targetSessionFile: "/sessions/sess-3.jsonl",
+}}, ctx);
+childHandlers.get("session_shutdown")({{
+  reason: "resume",
+  targetSessionFile: "/sessions/sess-child-resumed.jsonl",
+}}, childCtx);
+childSessionId = "sess-child-resumed";
+childSessionFile = "/sessions/sess-child-resumed.jsonl";
+const {{
+  pi: resumedChildPi,
+  handlers: resumedChildHandlers,
+  busHandlers: resumedChildBusHandlers,
+}} = makePi();
+rimz(resumedChildPi);
+resumedChildHandlers.get("session_start")({{
+  reason: "resume",
+  previousSessionFile: "/sessions/sess-child.jsonl",
+}}, childCtx);
+rootSessionId = "sess-3";
+rootSessionFile = "/sessions/sess-3.jsonl";
+const {{
+  pi: resumedAgainPi,
+  handlers: resumedAgainHandlers,
+  busHandlers: resumedAgainBusHandlers,
+}} = makePi();
+rimz(resumedAgainPi);
+resumedAgainHandlers.get("session_start")({{
+  reason: "resume",
+  previousSessionFile: "/sessions/sess-2.jsonl",
+}}, ctx);
+resumedAgainHandlers.get("session_shutdown")({{ reason: "quit" }}, ctx);
+resumedChildHandlers.get("session_shutdown")({{ reason: "quit" }}, childCtx);
+if (busHandlers.size !== 0 || resumedBusHandlers.size !== 0 ||
+    resumedAgainBusHandlers.size !== 0 || childBusHandlers.size !== 0 ||
+    resumedChildBusHandlers.size !== 0) {{
       throw new Error("extension registered plugin bus handlers");
     }}
 
@@ -197,6 +246,7 @@ const {{ pi: subprocessPi, handlers: subprocessHandlers }} = makePi();
 const subprocessCtx = {{
   sessionManager: {{
     getSessionId: () => "sess-subprocess",
+    getSessionFile: () => "/sessions/sess-subprocess.jsonl",
     getCwd: () => "/repo/subprocess",
   }},
 }};
@@ -206,7 +256,10 @@ if (globalThis[Symbol.for("rimz.pi.primary-session")]?.id !== "sess-subprocess" 
     process.env.RIMZ_PI_PARENT_SESSION !== "sess-subprocess") {{
   throw new Error("subprocess child did not claim its own process markers");
 }}
-subprocessHandlers.get("session_shutdown")({{ reason: "resume" }}, subprocessCtx);
+subprocessHandlers.get("session_shutdown")({{
+  reason: "resume",
+  targetSessionFile: "/sessions/sess-subprocess-resumed.jsonl",
+}}, subprocessCtx);
 const {{
   pi: resumedSubprocessPi,
   handlers: resumedSubprocessHandlers,
@@ -215,11 +268,15 @@ const {{
 const resumedSubprocessCtx = {{
   sessionManager: {{
     getSessionId: () => "sess-subprocess-resumed",
+    getSessionFile: () => "/sessions/sess-subprocess-resumed.jsonl",
     getCwd: () => "/repo/subprocess",
   }},
 }};
 rimz(resumedSubprocessPi);
-resumedSubprocessHandlers.get("session_start")({{ reason: "resume" }}, resumedSubprocessCtx);
+resumedSubprocessHandlers.get("session_start")({{
+  reason: "resume",
+  previousSessionFile: "/sessions/sess-subprocess.jsonl",
+}}, resumedSubprocessCtx);
 resumedSubprocessHandlers.get("session_shutdown")({{ reason: "quit" }}, resumedSubprocessCtx);
 if (resumedSubprocessBusHandlers.size !== 0) {{
   throw new Error("resumed child registered plugin bus handlers");
@@ -265,13 +322,20 @@ let payloads = [];
 const requiredSessionIds = [
   "sess-1",
   "sess-2",
+  "sess-3",
   "sess-child",
+  "sess-child-resumed",
   "sess-subprocess",
   "sess-subprocess-resumed",
   "sess-legacy-root",
   "sess-legacy-child",
 ];
-const requiredChildIds = ["sess-child", "sess-subprocess", "sess-subprocess-resumed"];
+const requiredChildIds = [
+  "sess-child",
+  "sess-child-resumed",
+  "sess-subprocess",
+  "sess-subprocess-resumed",
+];
 const payloadsComplete = (items) => {{
   const sessionIds = new Set(items
     .filter((payload) => payload.hook_event_name === "session_start")
@@ -299,7 +363,7 @@ const rootPayloads = payloads.filter((payload) =>
 const byEvent = Object.fromEntries(rootPayloads.map((payload) => [payload.hook_event_name, payload]));
 const sessionStarts = payloads.filter((payload) => payload.hook_event_name === "session_start");
 const sessionStart = (id) => sessionStarts.find((payload) => payload.session_id === id);
-for (const id of ["sess-1", "sess-2", "sess-legacy-root"]) {{
+for (const id of ["sess-1", "sess-2", "sess-3", "sess-legacy-root"]) {{
   const payload = sessionStart(id);
   if (payload?.session_lineage !== "root" || "parent_session_id" in payload) {{
     throw new Error(`root session lineage was ${{JSON.stringify(payload)}}`);
@@ -307,6 +371,7 @@ for (const id of ["sess-1", "sess-2", "sess-legacy-root"]) {{
 }}
 for (const [id, parentId] of [
   ["sess-child", "sess-2"],
+  ["sess-child-resumed", "sess-2"],
   ["sess-subprocess", "env-parent"],
   ["sess-subprocess-resumed", "env-parent"],
 ]) {{
@@ -343,7 +408,8 @@ if ("total_cost_usd" in byEvent.session_shutdown) {{
 }}
 const childStarts = payloads.filter((payload) => payload.hook_event_name === "subagent_started");
 const childStops = payloads.filter((payload) => payload.hook_event_name === "subagent_stopped");
-if (childStarts.length !== 3 || childStops.length !== 3) {{
+if (childStarts.length !== requiredChildIds.length ||
+    childStops.length !== requiredChildIds.length) {{
   throw new Error(`primary sessions self-reported or a child feed was lost: ${{JSON.stringify({{ childStarts, childStops }})}}`);
 }}
 for (const child of [...childStarts, ...childStops]) {{
