@@ -30,6 +30,7 @@ const versionAtLeast = (version, floor) => {
 const hasAgentSettled = versionAtLeast(PI_VERSION, [0, 80, 4]);
 const PARENT_SESSION_ENV = "RIMZ_PI_PARENT_SESSION";
 const PRIMARY_SESSION = Symbol.for("rimz.pi.primary-session");
+const PENDING_REPLACEMENTS = Symbol.for("rimz.pi.pending-session-replacements");
 const SESSION_REPLACEMENT_REASONS = new Set(["new", "resume", "fork", "reload"]);
 
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -257,6 +258,13 @@ export default function rimz(pi) {
   const text = (value) =>
     typeof value === "string" && value.trim() ? value.trim() : undefined;
   const label = (...candidates) => candidates.map(text).find(Boolean)?.slice(0, 80);
+  const sessionFile = (ctx) => text(ctx?.sessionManager?.getSessionFile?.());
+  const replacementKey = (reason, previousFile, targetFile) => {
+    const previous = reason === "reload" ? targetFile : previousFile;
+    return reason && previous && targetFile
+      ? JSON.stringify([reason, previous, targetFile])
+      : undefined;
+  };
 
   const childLabel = (ctx) =>
     label(nameBySession.get(sessionId(ctx)), process.env.PI_SUBAGENT_CHILD_AGENT);
@@ -329,10 +337,30 @@ export default function rimz(pi) {
     const processSessionId = text(processSession?.id);
     const processLineage = text(processSession?.lineage);
     const inheritedParentId = text(process.env[PARENT_SESSION_ENV]);
-    const replacement = SESSION_REPLACEMENT_REASONS.has(text(ev?.reason));
+    const replacementReason = text(ev?.reason);
+    const replacement = SESSION_REPLACEMENT_REASONS.has(replacementReason);
     const legacyChild = text(process.env.PI_SUBAGENT_CHILD_AGENT);
+    const pendingReplacements = globalThis[PENDING_REPLACEMENTS];
+    const pendingKey = replacementKey(
+      replacementReason,
+      text(ev?.previousSessionFile),
+      sessionFile(ctx),
+    );
+    const pendingReplacement =
+      pendingKey && pendingReplacements instanceof Map
+        ? pendingReplacements.get(pendingKey)
+        : undefined;
+    if (pendingReplacement) {
+      pendingReplacements.delete(pendingKey);
+      if (pendingReplacements.size === 0) delete globalThis[PENDING_REPLACEMENTS];
+    }
     if (!isPrimary) {
-      if (replacement && processLineage === "child") {
+      if (replacement && pendingReplacement) {
+        // session_shutdown captures this extension instance's role before Pi
+        // rebuilds the factory; another in-process instance cannot overwrite it.
+        sessionLineage = text(pendingReplacement.lineage);
+        childParentId = text(pendingReplacement.parentId);
+      } else if (replacement && processLineage === "child") {
         // Session replacement rebuilds the extension factory. A child process
         // remains attached to its original parent across its own session switch.
         sessionLineage = "child";
@@ -350,9 +378,14 @@ export default function rimz(pi) {
       } else if (processSessionId === id && processLineage) {
         sessionLineage = processLineage;
         childParentId = text(processSession.parentId);
-      } else if (inheritedParentId && inheritedParentId !== id) {
-        // A separate extension instance in the same process, or a fresh child
-        // process, inherits the active parent session id.
+      } else if (
+        inheritedParentId &&
+        inheritedParentId !== id &&
+        (processSessionId || legacyChild)
+      ) {
+        // An inherited id only establishes lineage when the process also has
+        // explicit child evidence. Long-lived mux servers can leak stale agent
+        // environment into otherwise independent root shells.
         sessionLineage = "child";
         childParentId = inheritedParentId;
       } else if (processSessionId === id && legacyChild) {
@@ -475,12 +508,31 @@ export default function rimz(pi) {
     }),
   );
   pi.on("session_shutdown", (ev, ctx) => {
+    const reason = text(ev?.reason);
+    const currentFile = sessionFile(ctx);
+    const targetFile = text(ev?.targetSessionFile) ??
+      (reason === "reload" ? currentFile : undefined);
+    const pendingKey = replacementKey(
+      reason,
+      currentFile,
+      targetFile,
+    );
+    if (SESSION_REPLACEMENT_REASONS.has(reason) && pendingKey) {
+      const pendingReplacements = globalThis[PENDING_REPLACEMENTS] instanceof Map
+        ? globalThis[PENDING_REPLACEMENTS]
+        : new Map();
+      pendingReplacements.set(pendingKey, {
+        lineage: sessionLineage,
+        parentId: childParentId,
+      });
+      globalThis[PENDING_REPLACEMENTS] = pendingReplacements;
+    }
     // A /reload tears down and re-registers the SAME session id. The feeds are
     // fire-and-forget, so an end signal racing the re-register could hide the
     // fresh row. Skip the end signal — the reloaded
     // extension's session_start re-registers in place. quit/new/resume/fork
     // genuinely end this session.
-    if (ev?.reason === "reload") return;
+    if (reason === "reload") return;
     feedChildStop(ctx, verdictBySession.get(sessionId(ctx)) ?? {});
     const id = sessionId(ctx);
     usageBySession.delete(id);
@@ -491,7 +543,7 @@ export default function rimz(pi) {
     if (messagePush?.timer) clearTimeout(messagePush.timer);
     messagePushBySession.delete(id);
     latestWindows = [];
-    feed("session_shutdown", ctx, { reason: ev?.reason });
+    feed("session_shutdown", ctx, { reason });
   });
 
   // The blocking pre-tool gate. Pi awaits this handler, so rimz returns the
