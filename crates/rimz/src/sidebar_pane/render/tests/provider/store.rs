@@ -342,8 +342,8 @@ fn pets_provider_dashboard_folds_footer_left_of_pet() {
     let footer = lines[footer_index];
 
     assert!(
-        footer.contains("? for help"),
-        "footer keeps help:\n{footer}"
+        footer.contains("Alt+p sidebar") && footer.contains("· ?"),
+        "folded footer keeps the sidebar and help shortcuts:\n{footer}"
     );
     assert!(
         !footer.contains('▀'),
@@ -366,7 +366,7 @@ fn pets_provider_dashboard_folds_footer_left_of_pet() {
     assert_eq!(
         lines
             .iter()
-            .filter(|line| line.contains("? for help"))
+            .filter(|line| line.contains("Alt+p sidebar"))
             .count(),
         1,
         "footer is not duplicated below the pet dashboard:\n{rendered}"

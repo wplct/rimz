@@ -1,5 +1,6 @@
 use crate::agents::AgentStatus;
 use crate::config::{GlyphRole, SidebarKeys};
+use crate::mux::FocusChord;
 use crate::store::snapshot::{
     SidebarLinkFreshness, SidebarLinkHealth, SidebarPresence, SidebarSnapshot, TruthNotice,
 };
@@ -160,49 +161,87 @@ pub(super) fn footer_lines(
 
 #[derive(Clone)]
 pub(super) struct FooterParts {
-    pub(super) left: Vec<Span<'static>>,
-    pub(super) help: Span<'static>,
+    left_options: Vec<Vec<Span<'static>>>,
+    help_variants: Vec<Span<'static>>,
 }
 
 pub(super) fn footer_parts(snapshot: &SidebarSnapshot, theme: &Theme, width: usize) -> FooterParts {
-    const HELP_TEXT: &str = "? for help";
-
     let presence = presence_badge(snapshot.presence, theme, width);
     let link = snapshot
         .link
         .as_ref()
         .map(|link| link_badge(link, theme, width));
-    let has_presence = presence.is_some();
-    let help_text = layout::clip(HELP_TEXT, width);
-    let help = Span::styled(help_text, theme.faint());
-    let help_start = width.saturating_sub(help.width());
-
-    let left = footer_left_spans(presence.clone(), link.clone());
-    if footer_left_fits(&left, help_start) {
-        return FooterParts { left, help };
-    }
-    if has_presence {
-        let left = footer_left_spans(presence, None);
-        if footer_left_fits(&left, help_start) {
-            return FooterParts { left, help };
-        }
-    }
-    if !has_presence {
-        let left = footer_left_spans(None, link);
-        if footer_left_fits(&left, help_start) {
-            return FooterParts { left, help };
-        }
-    }
+    let mut left_options = match (presence, link) {
+        (Some(presence), Some(link)) => vec![
+            footer_left_spans(Some(presence.clone()), Some(link)),
+            footer_left_spans(Some(presence), None),
+        ],
+        (Some(presence), None) => vec![footer_left_spans(Some(presence), None)],
+        (None, Some(link)) => vec![footer_left_spans(None, Some(link))],
+        (None, None) => Vec::new(),
+    };
+    left_options.push(Vec::new());
     FooterParts {
-        left: Vec::new(),
-        help,
+        left_options,
+        help_variants: footer_help_variants(snapshot, width)
+            .into_iter()
+            .map(|text| Span::styled(text, theme.faint()))
+            .collect(),
     }
 }
 
-fn footer_line(parts: FooterParts, width: usize) -> Line<'static> {
-    let help_start = width.saturating_sub(parts.help.width());
-    positioned_footer_line(parts.left, Some((help_start, parts.help)))
+fn footer_help_variants(snapshot: &SidebarSnapshot, width: usize) -> Vec<String> {
+    let focus = snapshot
+        .sidebar
+        .focus_key_label()
+        .and_then(FocusChord::parse)
+        .map(FocusChord::display_label);
+    let variants = match focus {
+        Some(key) => vec![
+            format!("{key} sidebar/back · ? for help"),
+            format!("{key} sidebar · ?"),
+            format!("{key} sidebar"),
+            format!("{key} · ?"),
+            "? for help".to_owned(),
+            "? help".to_owned(),
+        ],
+        None => vec!["? for help".to_owned(), "? help".to_owned()],
+    };
+    let mut fitting = variants
+        .into_iter()
+        .filter(|text| layout::text_width(text) <= width)
+        .collect::<Vec<_>>();
+    if fitting.is_empty() {
+        fitting.push(layout::clip("? for help", width));
+    }
+    fitting
+}
+
+pub(super) fn footer_line(parts: FooterParts, width: usize) -> Line<'static> {
+    let (left, help) = fit_footer_parts(&parts, width);
+    let help_start = width.saturating_sub(help.width());
+    positioned_footer_line(left, Some((help_start, help)))
         .unwrap_or_else(|| Line::from(Vec::<Span<'static>>::new()))
+}
+
+fn fit_footer_parts(parts: &FooterParts, width: usize) -> (Vec<Span<'static>>, Span<'static>) {
+    for left in &parts.left_options {
+        for help in &parts.help_variants {
+            let help_start = width.saturating_sub(help.width());
+            if help.width() <= width && footer_left_fits(left, help_start) {
+                return (left.clone(), help.clone());
+            }
+        }
+    }
+    let style = parts
+        .help_variants
+        .last()
+        .map(|span| span.style)
+        .unwrap_or_default();
+    (
+        Vec::new(),
+        Span::styled(layout::clip("? for help", width), style),
+    )
 }
 
 fn footer_left_fits(left: &[Span<'static>], help_start: usize) -> bool {
@@ -493,13 +532,16 @@ fn help_body_rows(
         theme,
         vec![("keys", keys_section), ("filter", filter_section)],
     );
-    if let Some(key) = focus_key {
+    if let Some(key) = focus_key
+        .and_then(FocusChord::parse)
+        .map(FocusChord::display_label)
+    {
         lines.push(Line::default());
         let entry = key_entry(
             theme,
             Some(key_icon(theme, GlyphRole::KeysSidebar)),
-            focus_chord_label(key),
-            "sidebar",
+            key,
+            "sidebar/back",
         );
         let key_w = layout::text_width(&entry.key);
         lines.push(Line::from(render_entry(theme, entry, key_w)).style(theme.body()));
@@ -542,10 +584,6 @@ fn key_label(base: &str) -> String {
         "space" => "Space".to_owned(),
         _ => base.to_owned(),
     }
-}
-
-fn focus_chord_label(key: &str) -> String {
-    key.to_ascii_lowercase().replace(['+', '-'], " ")
 }
 
 #[derive(Clone)]
@@ -777,5 +815,25 @@ mod tests {
         assert!(text.contains("done"));
         assert!(text.contains("A"));
         assert!(text.contains("all"));
+    }
+
+    #[test]
+    fn help_explains_only_a_working_sidebar_toggle() {
+        let theme = Theme::fixed(false);
+        let text = |focus_key| {
+            help_body_rows(&theme, Some(focus_key), &SidebarKeys::default())
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+
+        let valid = text("control-s");
+        assert!(valid.contains("Ctrl+s"));
+        assert!(valid.contains("sidebar/back"));
+
+        let invalid = text("not-a-chord");
+        assert!(!invalid.contains("not-a-chord"));
+        assert!(!invalid.contains("sidebar/back"));
     }
 }

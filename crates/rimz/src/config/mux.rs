@@ -31,12 +31,17 @@ impl From<&MachineConfig> for MultiplexerConfig {
     }
 }
 
-/// Zellij room options. Critical RimZ invariants are passed on every birth and
-/// attach; optional fields are passed only when the user sets them here, so the
-/// user's `~/.config/zellij/config.kdl` remains authoritative otherwise.
+/// Zellij room options. The bar selects chrome in RimZ's generated birth
+/// layout. Critical invariants are passed on every birth and attach; optional
+/// fields are passed only when the user sets them here, so the user's
+/// `~/.config/zellij/config.kdl` remains authoritative otherwise.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct ZellijConfig {
+    /// The built-in Zellij bar RimZ places at the bottom of every room view.
+    /// `status` keeps Zellij's mode-aware shortcut reminders visible;
+    /// `compact` preserves the denser legacy presentation.
+    pub bar: ZellijBar,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mouse_mode: Option<bool>,
     pub mouse_click_through: bool,
@@ -83,6 +88,7 @@ pub struct ZellijConfig {
 impl Default for ZellijConfig {
     fn default() -> Self {
         Self {
+            bar: ZellijBar::default(),
             mouse_mode: None,
             mouse_click_through: true,
             advanced_mouse_actions: None,
@@ -101,6 +107,14 @@ impl Default for ZellijConfig {
             disable_session_metadata: true,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ZellijBar {
+    #[default]
+    Status,
+    Compact,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]

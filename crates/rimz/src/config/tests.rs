@@ -1848,6 +1848,7 @@ fn load_from_surfaces_typed_config_errors() {
 fn zellij_room_options_parse_and_defaults_are_agent_friendly() {
     let dir = tempdir().expect("tempdir");
     let defaults = load_no_fragments(&write(&dir, "")).expect("load");
+    assert_eq!(defaults.zellij.bar, ZellijBar::Status);
     assert_eq!(defaults.zellij.mouse_mode, None);
     assert_eq!(defaults.zellij.pane_frames, None);
     assert_eq!(defaults.zellij.copy_clipboard, None);
@@ -1858,6 +1859,7 @@ fn zellij_room_options_parse_and_defaults_are_agent_friendly() {
     let config = load_no_fragments(&write(
         &dir,
         "[zellij]\n\
+             bar = \"compact\"\n\
              pane_frames = true\n\
              mouse_mode = false\n\
              advanced_mouse_actions = true\n\
@@ -1873,6 +1875,7 @@ fn zellij_room_options_parse_and_defaults_are_agent_friendly() {
              on_force_close = \"quit\"\n",
     ))
     .expect("load");
+    assert_eq!(config.zellij.bar, ZellijBar::Compact);
     assert_eq!(config.zellij.pane_frames, Some(true));
     assert_eq!(config.zellij.mouse_mode, Some(false));
     assert_eq!(config.zellij.advanced_mouse_actions, Some(true));

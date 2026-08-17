@@ -56,7 +56,7 @@
 
 [sidebar]
 # Sidebar behavior: focus keybind, motion keybinds, spend headline window, and worktree comparison target.
-# focus_key = "Alt+p"                 # global chord to focus the sidebar (toggle); "" or "off" to disable
+# focus_key = "Alt+p"                 # global sidebar toggle; "", "off", or "none" disables it
 # afk_after_secs = 900                # input-idle seconds before the AFK badge (tmux only); default 15 min
 # spend_window = "session"            # cockpit & provider headline window: "session", "24h", or "today"
 ## trunk = "develop"                  # optional preferred branch for worktree comparison stats
@@ -95,6 +95,9 @@
 ## default = "tmux"                   # preferred backend when both zellij and tmux are installed; unset resolves to tmux
 
 [zellij]
+# Keep Zellij's mode-aware shortcut reminders visible; use "compact" for the
+# legacy one-line bar without the full key guide.
+bar = "status"                         # "status" or "compact"
 # Critical room invariants RimZ always applies:
 mouse_click_through = true            # single click on a card jumps to the agent (Zellij >= 0.44.0)
 focus_follows_mouse = false           # off so a single click passes through to the renderer

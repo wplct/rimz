@@ -16,7 +16,7 @@ The one catch is age. Multiplexers predate coding agents by decades, and their d
 
 ## What RimZ changes, and what stays yours
 
-RimZ's room is session-scoped. On every session birth and reattach it applies the settings agents need (locked mode and single-click sidebar jumps on Zellij; mouse, focus events, notification passthrough, soft-newline keys, and clipboard on tmux; a deep scrollback on both) and stops there. It does not edit your `~/.config/zellij/config.kdl` or `~/.tmux.conf`. Your theme, keybinds, copy-mode, and status bar are yours, inside the room and in every session you run outside it. The per-setting detail is in [set up your machine](./setup.md#configure-your-multiplexer); the exact keys and defaults are in [configuration](./configuration.md#multiplexer-room-options).
+RimZ's room is session-scoped. On every session birth and reattach it applies the settings agents need (locked mode and single-click sidebar jumps on Zellij; mouse, focus events, notification passthrough, soft-newline keys, and clipboard on tmux; a deep scrollback on both) and stops there. It does not edit your `~/.config/zellij/config.kdl` or `~/.tmux.conf`. Your theme, keybinds, and copy-mode stay yours inside the room and everywhere else. RimZ's generated Zellij layout restores the native mode-aware status bar by default because supplying a layout would otherwise remove it; `[zellij] bar = "compact"` keeps the older compact presentation. The per-setting detail is in [set up your machine](./setup.md#configure-your-multiplexer); the exact keys and defaults are in [configuration](./configuration.md#multiplexer-room-options).
 
 One thing more happens on Zellij: RimZ seeds a permission grant for the presence plugin it ships, so the first attach is not interrupted by Zellij's plugin prompt. Your `config.kdl` stays untouched and the grant is yours to revoke; the full boundary is in [security and trust](./security.md#the-zellij-presence-plugin).
 
@@ -31,6 +31,7 @@ The `[zellij]` and `[tmux]` tables in `~/.config/rimz/config.toml` tune the room
 default = "zellij"              # unset resolves to tmux when both are installed
 
 [zellij]
+bar = "status"                 # mode-aware key reminders; "compact" keeps the legacy bar
 pane_frames = true              # optional override; unset, your config.kdl wins
 
 [tmux]
@@ -91,6 +92,8 @@ session_serialization false            // prefer clean session births over held 
 `pane_frames true` draws a titled border around each pane so you can always see which one holds focus, the single most useful upgrade for a multi-agent layout. RimZ enforces its room's own mouse behavior, so your personal `focus_follows_mouse` and `mouse_click_through` settings no longer break single-click sidebar jumps.
 
 Inside a RimZ room, opening a new pane splits the focused pane along its longer visual edge, and closing that pane returns the space to its split sibling.
+
+RimZ restores Zellij's one-row `status-bar` in every generated room view. It reads Zellij's live mode and keymap, so entering Pane or Tab mode shows the shortcuts that actually apply there, including `n` for a new pane or tab. Choose `[zellij] bar = "compact"` when you prefer the quieter legacy bar without the full key guide. A bar change applies when the room is next born or explicitly reborn because Zellij fixes the layout template at session birth.
 
 ### Alt chords in locked mode
 

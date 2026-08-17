@@ -174,6 +174,7 @@ const LEGACY_SET_KEYS: &[&str] = &[
     "theme.rule",
     "theme.selection",
     "theme.selection_bg",
+    "zellij.bar",
     "zellij.mouse_mode",
     "zellij.mouse_click_through",
     "zellij.advanced_mouse_actions",

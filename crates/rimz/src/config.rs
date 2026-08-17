@@ -88,7 +88,8 @@ pub use harness::{
 pub use loop_::{CheckOn, LoopConfig, TaskBudgetError, TaskEntry, TaskTarget, Tasks};
 pub use mux::{
     MultiplexerConfig, MuxConfig, TmuxConfig, TmuxExtendedKeysFormat, TmuxPaneBorderLines,
-    TmuxPaneBorderStatus, TmuxSetClipboard, ZellijClipboard, ZellijConfig, ZellijForceClose,
+    TmuxPaneBorderStatus, TmuxSetClipboard, ZellijBar, ZellijClipboard, ZellijConfig,
+    ZellijForceClose,
 };
 pub use notifications::{
     DesktopNotificationMode, NotificationKind, NotificationSoundMode, NotificationTrigger,

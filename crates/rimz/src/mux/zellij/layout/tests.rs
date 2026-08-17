@@ -112,36 +112,35 @@ fn assert_sidebar_sizes_are_percent(layout: &str) {
     }
 }
 
-fn assert_work_area_template(layout: &str, visible_compact_bars: usize, focused: usize) {
-    assert!(layout.contains("compact-bar"), "{layout}");
+fn assert_bar(layout: &str, bar: &str, visible_bars: usize) {
+    let plugin = format!(r#"plugin location="zellij:{bar}""#);
+    assert_eq!(
+        layout.matches(plugin.as_str()).count(),
+        visible_bars,
+        "every visible tab/template carries the configured bar:\n{layout}",
+    );
+}
+
+fn assert_work_area_template(layout: &str, visible_bars: usize, focused: usize) {
+    assert_bar(layout, "tab-bar", visible_bars);
+    assert_bar(layout, "status-bar", visible_bars);
+    assert!(!layout.contains("compact-bar"), "{layout}");
     assert!(
         !layout.contains("swap_tiled_layout"),
         "RimZ must leave Zellij's native focused-pane split path unobstructed:\n{layout}",
     );
     assert_eq!(layout.matches("focus=true").count(), focused, "{layout}");
-    assert_eq!(
-        layout
-            .matches(r#"plugin location="zellij:compact-bar""#)
-            .count(),
-        visible_compact_bars,
-        "every visible tab/template carries compact-bar:\n{layout}",
-    );
 }
 
-fn assert_undocked_work_area_template(layout: &str, visible_compact_bars: usize, focused: usize) {
-    assert!(layout.contains("compact-bar"), "{layout}");
+fn assert_undocked_work_area_template(layout: &str, visible_bars: usize, focused: usize) {
+    assert_bar(layout, "tab-bar", visible_bars);
+    assert_bar(layout, "status-bar", visible_bars);
+    assert!(!layout.contains("compact-bar"), "{layout}");
     assert!(
         !layout.contains("swap_tiled_layout"),
         "undocked layouts must not reintroduce a swap layout:\n{layout}",
     );
     assert_eq!(layout.matches("focus=true").count(), focused, "{layout}");
-    assert_eq!(
-        layout
-            .matches(r#"plugin location="zellij:compact-bar""#)
-            .count(),
-        visible_compact_bars,
-        "every visible tab/template carries compact-bar:\n{layout}",
-    );
 }
 
 fn resume_tab(label: &str, panes: &[&[&str]], cwd: &str) -> ResumeTab {
@@ -189,6 +188,55 @@ fn session_layout_renders_terminal_template_bar_and_runtime_args() {
     assert!(layout.contains(r#""--refresh-ms" "50""#), "{layout}");
     assert!(layout.contains("session_serialization false"), "{layout}");
     assert!(layout.contains("disable_session_metadata true"), "{layout}");
+}
+
+#[test]
+fn session_layout_can_preserve_the_compact_bar() {
+    let mut opts = sidebar_opts("rimz-compact-bar", None, None);
+    opts.config.zellij.bar = crate::config::ZellijBar::Compact;
+
+    let layout = render_session_layout(&opts, None, &[]).expect("render layout");
+
+    assert_bar(&layout, "compact-bar", 2);
+    assert!(!layout.contains("status-bar"), "{layout}");
+    assert!(!layout.contains("tab-bar"), "{layout}");
+}
+
+#[test]
+fn generated_view_layouts_share_the_configured_bar() {
+    let mut background = background_view_opts(vec![]);
+    background.sidebar.config.zellij.bar = crate::config::ZellijBar::Compact;
+    let background_layout =
+        render_background_view_layout(&background).expect("render background layout");
+    assert_bar(&background_layout, "compact-bar", 1);
+    assert!(
+        !background_layout.contains("status-bar"),
+        "{background_layout}"
+    );
+    assert!(
+        !background_layout.contains("tab-bar"),
+        "{background_layout}"
+    );
+
+    let mut tab = TabOptions {
+        title: "review".to_owned(),
+        panes: crate::mux::LayoutPanes {
+            columns: vec![layout_column(&[&["coder"]], false)],
+        },
+        focus: true,
+        dock_sidebar: true,
+        sidebar: background.sidebar,
+    };
+    let docked = render_tab_layout(&tab, 30).expect("render docked tab layout");
+    assert_bar(&docked, "compact-bar", 1);
+    assert!(!docked.contains("status-bar"), "{docked}");
+    assert!(!docked.contains("tab-bar"), "{docked}");
+
+    tab.dock_sidebar = false;
+    let undocked = render_tab_layout(&tab, 30).expect("render undocked tab layout");
+    assert_bar(&undocked, "compact-bar", 1);
+    assert!(!undocked.contains("status-bar"), "{undocked}");
+    assert!(!undocked.contains("tab-bar"), "{undocked}");
 }
 
 #[test]

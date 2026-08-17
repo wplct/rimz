@@ -38,13 +38,28 @@ impl Drop for TempLayoutFile {
     }
 }
 
-/// The one-row compact-bar plugin pane. Supplying our own layout replaces
-/// Zellij's built-in tab/status bar, so every view re-adds the compact-bar or is
-/// born bar-less. Must stay multi-line: Zellij's KDL parser rejects the
-/// single-line `pane {{ plugin … }}` form.
+/// The Zellij bar panes. Supplying our own layout replaces Zellij's built-in
+/// tab/status bars, so status mode must restore both native plugins while
+/// compact mode keeps the combined one-row bar. Must stay multi-line: Zellij's
+/// KDL parser rejects the single-line `pane {{ plugin … }}` form.
+const TAB_BAR_KDL: &str = r#"pane size=1 borderless=true {
+        plugin location="zellij:tab-bar"
+    }"#;
+
+const STATUS_BAR_KDL: &str = r#"pane size=1 borderless=true {
+        plugin location="zellij:status-bar"
+    }"#;
+
 const COMPACT_BAR_KDL: &str = r#"pane size=1 borderless=true {
         plugin location="zellij:compact-bar"
     }"#;
+
+fn bar_kdl(bar: crate::config::ZellijBar) -> (&'static str, &'static str) {
+    match bar {
+        crate::config::ZellijBar::Status => (TAB_BAR_KDL, STATUS_BAR_KDL),
+        crate::config::ZellijBar::Compact => ("", COMPACT_BAR_KDL),
+    }
+}
 
 /// The left `rimz sidebar serve` pane every Zellij view carries, as a KDL `pane`
 /// block. `cwd` is spelled only when the pane can't inherit the session's
@@ -95,7 +110,7 @@ fn sidebar_pane_kdl(
 /// `pane focus=true`, not Zellij's `children` placeholder; nested `children`
 /// creates the right terminal on 0.44.3 but leaves focus stranded on the
 /// sidebar in newly-created tabs. The visible layout pins the sidebar and
-/// compact-bar as fixed tree siblings. Zellij's `auto_layout=false` plus
+/// configured bar as fixed tree siblings. Zellij's `auto_layout=false` plus
 /// `stacked_resize=true` leaves no-direction pane opens and closes on the
 /// focused-pane native split path instead of a root swap layout. All panes
 /// inherit the session's `--default-cwd` except the daemon hosts and resumed
@@ -114,6 +129,7 @@ pub(super) fn render_session_layout(
     // birth; only the `new_tab_template` waits for an attached client. Both
     // carry the same seed derived from the launch probe.
     let sidebar = sidebar_pane_kdl(opts, None, opts.target.percent())?;
+    let (top_bar, bottom_bar) = bar_kdl(opts.config.zellij.bar);
 
     // The daemon tab leads, when present.
     let daemon_tab = match daemon {
@@ -129,8 +145,9 @@ pub(super) fn render_session_layout(
             )?;
             format!(
                 r#"    tab name={daemon_name} {{
+        {top_bar}
 {body}
-        {COMPACT_BAR_KDL}
+        {bottom_bar}
     }}
 "#,
             )
@@ -167,8 +184,9 @@ pub(super) fn render_session_layout(
         let focus_attr = if index == 0 { " focus=true" } else { "" };
         agent_tabs.push_str(&format!(
             r#"    tab name={tab_name}{focus_attr} {{
+        {top_bar}
 {body}
-        {COMPACT_BAR_KDL}
+        {bottom_bar}
     }}
 "#,
         ));
@@ -183,12 +201,14 @@ pub(super) fn render_session_layout(
     Ok(format!(
         r#"layout {{
     new_tab_template {{
+        {top_bar}
 {new_tab_body}
-        {COMPACT_BAR_KDL}
+        {bottom_bar}
     }}
 {daemon_tab}{agent_tabs}    tab{work_focus} {{
+        {top_bar}
 {work_body}
-        {COMPACT_BAR_KDL}
+        {bottom_bar}
     }}
 }}
 session_serialization {session_serialization}
@@ -208,8 +228,8 @@ fn kdl_string(value: &str) -> Result<String> {
 
 /// A tab layout born `sidebar | content | hosts…`: the global sidebar docked on
 /// the left, content panes in the middle, daemon hosts stacked on the right when
-/// present, and the compact-bar below. The render and daemon columns share the
-/// sidebar width verdict; content absorbs the center remainder.
+/// present, and the configured Zellij bar below. The render and daemon columns
+/// share the sidebar width verdict; content absorbs the center remainder.
 /// Supplying this as `new-tab --layout` overrides the session template, so the
 /// sidebar is spelled out here rather than inherited. The sidebar runs from its
 /// own worktree cwd and each command pane from its own `cwd`. Every command pane
@@ -232,12 +252,14 @@ pub(super) fn render_background_view_layout(opts: &BackgroundViewOptions) -> Res
         opts.sidebar.target.percent(),
         4,
     )?;
+    let (top_bar, bottom_bar) = bar_kdl(opts.sidebar.config.zellij.bar);
     // The body (sidebar + work area) is a nested vertical split above the
-    // one-row compact-bar.
+    // configured one-row bar.
     Ok(format!(
         r#"layout {{
+    {top_bar}
 {body}
-    {COMPACT_BAR_KDL}
+    {bottom_bar}
 }}
 "#,
     ))
@@ -265,10 +287,12 @@ pub(super) fn render_tab_layout(opts: &TabOptions, sidebar_percent: u16) -> Resu
         )?);
     }
     let body = render_sidebar_work_area(&sidebar, &columns, 4);
+    let (top_bar, bottom_bar) = bar_kdl(opts.sidebar.config.zellij.bar);
     Ok(format!(
         r#"layout {{
+    {top_bar}
 {body}
-    {COMPACT_BAR_KDL}
+    {bottom_bar}
 }}
 "#,
     ))
@@ -285,11 +309,13 @@ fn render_undocked_tab_layout(opts: &TabOptions) -> Result<String> {
             8,
         )?);
     }
+    let (top_bar, bottom_bar) = bar_kdl(opts.sidebar.config.zellij.bar);
     Ok(format!(
         r#"layout {{
+    {top_bar}
     pane split_direction="vertical" {{
 {columns}    }}
-    {COMPACT_BAR_KDL}
+    {bottom_bar}
 }}
 "#,
     ))
