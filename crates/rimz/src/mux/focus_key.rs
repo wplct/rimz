@@ -49,16 +49,6 @@ impl FocusChord {
         };
         format!("{prefix}-{}", self.key)
     }
-
-    /// Human-facing chord label shared by the sidebar reminder and the
-    /// backend binding grammar.
-    pub fn display_label(self) -> String {
-        let modifier = match self.modifier {
-            Modifier::Alt => "Alt",
-            Modifier::Ctrl => "Ctrl",
-        };
-        format!("{modifier}+{}", self.key)
-    }
 }
 
 /// A resolved focus-key binding: the chord plus the rimz binary the keybind
@@ -122,12 +112,10 @@ mod tests {
     fn parses_alt_and_ctrl_chords_into_tmux_syntax() {
         let alt = FocusChord::parse("Alt+p").expect("alt chord");
         assert_eq!(alt.to_tmux(), "M-p");
-        assert_eq!(alt.display_label(), "Alt+p");
 
         // Case-insensitive modifier, `-` separator, and the `M-`/`C-` aliases.
         let ctrl = FocusChord::parse("ctrl-s").unwrap();
         assert_eq!(ctrl.to_tmux(), "C-s");
-        assert_eq!(ctrl.display_label(), "Ctrl+s");
         assert_eq!(FocusChord::parse("M-0").unwrap().to_tmux(), "M-0");
         assert_eq!(FocusChord::parse("Alt+`").unwrap().to_tmux(), "M-`");
     }

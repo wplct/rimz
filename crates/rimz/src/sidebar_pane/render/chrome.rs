@@ -1,6 +1,5 @@
 use crate::agents::AgentStatus;
 use crate::config::{GlyphRole, SidebarKeys};
-use crate::mux::FocusChord;
 use crate::store::snapshot::{
     SidebarLinkFreshness, SidebarLinkHealth, SidebarPresence, SidebarSnapshot, TruthNotice,
 };
@@ -194,8 +193,7 @@ fn footer_help_variants(snapshot: &SidebarSnapshot, width: usize) -> Vec<String>
     let focus = snapshot
         .sidebar
         .focus_key_label()
-        .and_then(FocusChord::parse)
-        .map(FocusChord::display_label);
+        .and_then(focus_chord_label);
     let variants = match focus {
         Some(key) => vec![
             format!("{key} sidebar/back · ? for help"),
@@ -215,6 +213,21 @@ fn footer_help_variants(snapshot: &SidebarSnapshot, width: usize) -> Vec<String>
         fitting.push(layout::clip("? for help", width));
     }
     fitting
+}
+
+fn focus_chord_label(raw: &str) -> Option<String> {
+    let (modifier, key) = raw.trim().split_once(['+', '-'])?;
+    let modifier = match modifier.trim().to_ascii_lowercase().as_str() {
+        "alt" | "meta" | "m" => "Alt",
+        "ctrl" | "control" | "c" => "Ctrl",
+        _ => return None,
+    };
+    let mut chars = key.trim().chars();
+    let key = chars.next()?;
+    if chars.next().is_some() || !key.is_ascii_graphic() {
+        return None;
+    }
+    Some(format!("{modifier}+{key}"))
 }
 
 pub(super) fn footer_line(parts: FooterParts, width: usize) -> Line<'static> {
@@ -532,10 +545,7 @@ fn help_body_rows(
         theme,
         vec![("keys", keys_section), ("filter", filter_section)],
     );
-    if let Some(key) = focus_key
-        .and_then(FocusChord::parse)
-        .map(FocusChord::display_label)
-    {
+    if let Some(key) = focus_key.and_then(focus_chord_label) {
         lines.push(Line::default());
         let entry = key_entry(
             theme,

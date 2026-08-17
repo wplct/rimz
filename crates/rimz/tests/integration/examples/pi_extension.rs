@@ -346,8 +346,11 @@ const payloadsComplete = (items) => {{
   const childStopIds = new Set(items
     .filter((payload) => payload.hook_event_name === "subagent_stopped")
     .map((payload) => payload.subagent_id));
+  const rootShutdown = items.some((payload) =>
+    payload.hook_event_name === "session_shutdown" && payload.session_id === "sess-1");
   return requiredSessionIds.every((id) => sessionIds.has(id)) &&
     requiredChildIds.every((id) => childStartIds.has(id) && childStopIds.has(id)) &&
+    rootShutdown &&
     items.some((payload) => payload.hook_event_name === boundaryEvent);
 }};
 for (let i = 0; i < 250; i += 1) {{

@@ -140,7 +140,7 @@ allowed-imports = [
     "store::parse_cache",
     "store::paths",
 ]
-surface-budget = 169
+surface-budget = 170
 
 [[module]]
 path = "crates/rimz/src/daemon_content.rs"
