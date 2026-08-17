@@ -1,0 +1,63 @@
+name: Manual Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_HTTP_TIMEOUT: "120"
+  CARGO_NET_RETRY: "5"
+  CARGO_HOME: /usr/local/cargo
+  RUSTUP_HOME: /usr/local/rustup
+  CARGO_TARGET_DIR: target/manual
+  RUSTFLAGS: -D warnings
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/rimz-ci:latest
+      options: --init
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+    steps:
+      - name: Assert running in the rimz-ci image
+        run: test -f /etc/rimz-ci
+
+      - uses: actions/checkout@v7
+
+      - name: Trust checkout for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Configure sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.16.0"
+
+      - name: Build release binary
+        run: |
+          export PATH="/usr/local/cargo/bin:/usr/local/bin:$PATH"
+          mold -run cargo build --locked --release -p rimz
+
+      - name: Package release binary
+        run: |
+          tar -C target/manual/release -czf "rimz-${GITHUB_SHA}.tar.gz" rimz
+          sha256sum "rimz-${GITHUB_SHA}.tar.gz" > "rimz-${GITHUB_SHA}.sha256"
+
+      - name: Upload release binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: rimz-${{ github.sha }}
+          path: |
+            rimz-${{ github.sha }}.tar.gz
+            rimz-${{ github.sha }}.sha256
+          if-no-files-found: error
+          retention-days: 3
