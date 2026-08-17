@@ -99,7 +99,7 @@ fn open_sidebar_births_native_layout_and_template() {
         "layout should create a sidebar + terminal pane in {name}: {panes:?}",
     );
     assert_sidebar_is_left_thirty_percent(xdg, &name);
-    assert_session_has_bottom_bar(xdg, &name);
+    assert_session_has_configured_bars(xdg, &name, opts.config.zellij.bar);
     assert_sidebars_not_held(xdg, &name, "initial tab");
 
     let work_pane = panes

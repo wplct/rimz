@@ -114,7 +114,8 @@ mod tests {
         assert_eq!(alt.to_tmux(), "M-p");
 
         // Case-insensitive modifier, `-` separator, and the `M-`/`C-` aliases.
-        assert_eq!(FocusChord::parse("ctrl-s").unwrap().to_tmux(), "C-s");
+        let ctrl = FocusChord::parse("ctrl-s").unwrap();
+        assert_eq!(ctrl.to_tmux(), "C-s");
         assert_eq!(FocusChord::parse("M-0").unwrap().to_tmux(), "M-0");
         assert_eq!(FocusChord::parse("Alt+`").unwrap().to_tmux(), "M-`");
     }

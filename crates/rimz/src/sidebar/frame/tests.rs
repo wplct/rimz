@@ -197,7 +197,7 @@ fn full_client_map_requires_every_client_to_agree_on_one_terminal() {
         pane("terminal_1", "tab_0", Some("zsh"), false),
         PaneRef {
             pane_id: plugin.clone(),
-            ..pane("terminal_2", "tab_0", Some("compact-bar"), false)
+            ..pane("terminal_2", "tab_0", Some("status-bar"), false)
         },
     ];
     let agree = [

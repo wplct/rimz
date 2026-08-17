@@ -42,7 +42,7 @@ A complete frame: a selected agent in a worktree, with the per-provider dashboar
   W: ◎ 420  ◇ 202.9M ↘ 175.1M ↗ 27.8M ◌  5.2B $3,888.88    ← week stats: sessions · tokens · usd value
   M: ◎ 860  ◇ 420.0M ↘ 366.0M ↗ 54.0M ◌ 10.8B $8,666.66    ← month stats: sessions · tokens · usd value
 
-                                                    ? for help  ← footer help
+                                Alt+p sidebar/back · ? for help  ← footer shortcuts
 ```
 
 The rest of this doc reads that frame zone by zone — what each zone shows and how it renders. Why the column ranks, groups, and routes the way it does is [the sidebar guide](../guide/sidebar.md); this page stays with what you see.
@@ -136,9 +136,9 @@ How the wash, the crest, and the lead-row motion are produced — `shimmer` vs. 
 
 When two checkout groups render the same branch name, each header adds a muted `· repo` qualifier naming the shortest path suffix that distinguishes its checkout; unambiguous headers stay unchanged.
 
-The AFK badge is quiet chrome: it appears only while away, uses the muted tone, and takes the footer's left edge. The remote-link badge yields to it and appears after two spaces only when the line still fits before `? for help`.
+The AFK badge is quiet chrome: it appears only while away, uses the muted tone, and takes the footer's left edge. The remote-link badge yields to it and appears after two spaces only when the line still fits before the right-side shortcut reminder.
 
-Remote-link badge tones are color-only: a healthy link reads green, then latency and loss slide it continuously through yellow and amber to red, bold at the critical end; a warming link stays neutral until it has an RTT sample. Under `NO_COLOR`, the numbers carry the state. The badge pins to the footer's left edge in the common active case, and `? for help` pins to the footer's right edge.
+Remote-link badge tones are color-only: a healthy link reads green, then latency and loss slide it continuously through yellow and amber to red, bold at the critical end; a warming link stays neutral until it has an RTT sample. Under `NO_COLOR`, the numbers carry the state. The badge pins to the footer's left edge in the common active case, and the longest shortcut reminder that fits pins to the footer's right edge.
 
 ## Zone 1 — the cockpit
 
@@ -368,7 +368,7 @@ With `[theme.pets] enabled = true`, the active provider block narrows and one pa
  W: ◎ 420        ◇ 202.9M ◌ 5.2B
  M: ◎ 860        ◇ 420.0M ◌ 10.8B
  W: $3,888.88          M: $8,666.66
- ⇄ remote 210ms              ? for help
+ ⇄ remote 210ms       Alt+p · ? for help
 ```
 
 Each block with historical usage speaks the fleet store's vocabulary, scoped to the provider: the configured headline `◎` session count, then the `◇ ↘ ↗ ◌` token breakdown, where `↘` input subsumes cache creation, with the spend pinned right. A ledgerless block keeps that full row in place: `◎` carries the number of identity-bearing sessions active in this room, while the unavailable token and dollar positions show dim `–` placeholders rather than invented zeroes. The stats row stays one row in every provider layout; normal and narrow hide the input/output split only when the width needs it. The `Total:` delimiter switches from provider-headline facts to the separate account-global fleet totals. Wide paints `W:` and `M:` as two full rows with USD pinned right; normal and narrow split each token row into a left `W:`/`M:` session cluster and right-aligned token stats, then put `W: $...` on the left and `M: $...` on the right of the third total row. A cold or empty fleet cache keeps those global rows and reads `$0.00`; the ledgerless provider headline does not synthesize one.
@@ -426,16 +426,18 @@ Every figure is computed from the transcript JSONL — Codex's dollars priced fr
 
 Pinned to the bottom edge, below all three zones. The body is truncated before this chrome is ever clipped, so it can never scroll off.
 
-**Footer.** Faint chrome — the deepest legible gray, receding to pure scaffolding. It is just `? for help`, pinned to the bottom-right edge:
+**Footer.** Faint chrome — the deepest legible gray, receding to pure scaffolding. The right edge keeps the configured room-wide sidebar toggle visible beside the in-pane help key:
 
 ```
-                                                   ? for help
+                       Alt+p sidebar/back · ? for help
 ```
+
+`Alt+p` focuses the sidebar from any pane and toggles back to the previous working pane. The label follows `[sidebar] focus_key`; an unbound or invalid focus key falls back to `? for help` rather than advertising a chord that cannot fire. Narrow panes preserve the action first, shortening the copy to `Alt+p sidebar · ?`, then `Alt+p sidebar` or `Alt+p · ?` as left-side presence and link badges consume space.
 
 When the room is AFK, the footer adds a muted sleep badge at the left edge and keeps help on the right. tmux reports both detached and attached-but-idle after the configured idle window (`[sidebar] afk_after_secs`, 15 minutes by default), so it shows `zᶻ idle` during the first minute and then `zᶻ idle · 17m`; Zellij reports attached/detached only, so it shows `zᶻ away` once every terminal client detaches:
 
 ```
-zᶻ idle · 17m                                      ? for help
+zᶻ idle · 17m         Alt+p sidebar/back · ? for help
 ```
 
 **Pane-source notice.** When the producer repairs a partial pane read by carrying live panes from the prior frame, a dim line appears above the footer while the room stays interactive:
@@ -471,7 +473,7 @@ These notices clear when the next accepted pane frame lands. A health alert take
 │ ⢿ w   working       ○ o     idle       │
 │ ● u   unread        ≡ A     all        │
 │                                        │
-│ ▐ alt p sidebar                        │
+│ ▐ Alt+p sidebar/back                   │
 ╰─────────── any key to close ───────────╯
 ```
 

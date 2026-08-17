@@ -4,6 +4,7 @@ use super::*;
 use MachineConfigFileKind as Kind;
 
 const ACTIVE_ZELLIJ_DEFAULTS: &[&str] = &[
+    "bar",
     "mouse_click_through",
     "focus_follows_mouse",
     "session_serialization",

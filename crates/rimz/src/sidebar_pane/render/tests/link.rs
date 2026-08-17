@@ -54,7 +54,7 @@ fn footer_left_pins_fresh_link_badge_and_keeps_help_when_it_fits() {
 
     assert!(text.starts_with("⇄ remote 230ms"));
     assert!(!text.contains('%'));
-    assert!(text.ends_with("? for help"));
+    assert!(text.ends_with("Alt+p sidebar · ?"));
 }
 
 #[test]
@@ -66,8 +66,8 @@ fn footer_prints_right_help_when_remote_badge_would_collide() {
         18,
     );
 
-    assert_eq!(footer_text(&snapshot, 17), "       ? for help");
-    assert_eq!(footer_text(&snapshot, 20), "          ? for help");
+    assert_eq!(footer_text(&snapshot, 17), "Alt+p sidebar · ?");
+    assert_eq!(footer_text(&snapshot, 20), "   Alt+p sidebar · ?");
 }
 
 #[test]
@@ -81,7 +81,7 @@ fn stale_link_badge_is_unknown() {
 
     let text = footer_text(&snapshot, 24);
     assert!(text.starts_with("⇄ remote ?"));
-    assert!(text.ends_with("? for help"));
+    assert!(text.ends_with("Alt+p sidebar"));
     let spans = footer_spans(&snapshot, 24);
     let badge = spans
         .iter()
@@ -146,7 +146,7 @@ fn footer_pins_help_right_when_attention_needs_it() {
 
     let text = footer_text(&snapshot, 40);
 
-    assert_eq!(text.find("? for help"), Some(30));
+    assert_eq!(text.find("? for help"), Some(31));
     assert!(!text.contains("next"));
 }
 
@@ -163,7 +163,7 @@ fn footer_keeps_help_right_without_attention_hint() {
 
     let text = footer_text(&snapshot, 24);
 
-    assert_eq!(text.find("? for help"), Some(14));
+    assert!(text.ends_with("Alt+p sidebar · ?"));
     assert!(!text.contains("next"));
 }
 
@@ -188,7 +188,7 @@ fn remote_footer_keeps_left_badge_and_right_help_when_they_fit() {
     let text = footer_text(&snapshot, 44);
 
     assert!(text.starts_with("⇄ remote 210ms"));
-    assert!(text.ends_with("? for help"));
+    assert!(text.ends_with("Alt+p sidebar · ?"));
     assert!(!text.contains("next"));
 }
 

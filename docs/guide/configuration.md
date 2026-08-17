@@ -275,7 +275,7 @@ The `[mux]` table selects the default backend after the `--mux <name>` selection
 
 The two backends differ in how a key takes effect:
 
-- **`[zellij]`** carries a few invariants RimZ always applies (locked mode, click-through with focus-follows-mouse off, no session serialization since RimZ owns rebirth, disabled session metadata, and native focused-pane splitting) plus optional keys (`pane_frames`, `copy_clipboard`, …) that apply only when you set them and otherwise fall through to your `~/.config/zellij/config.kdl`. The sidebar pane is always borderless so its hit-testing stays stable regardless of `pane_frames`.
+- **`[zellij]`** carries a few invariants RimZ always applies (locked mode, click-through with focus-follows-mouse off, no session serialization since RimZ owns rebirth, disabled session metadata, and native focused-pane splitting) plus optional keys (`pane_frames`, `copy_clipboard`, …) that apply only when you set them and otherwise fall through to your `~/.config/zellij/config.kdl`. `bar = "status"` restores Zellij's mode-aware shortcut guide in RimZ's generated layout; `"compact"` preserves the legacy compact bar. The sidebar pane is always borderless so its hit-testing stays stable regardless of `pane_frames`.
 - **`[tmux]`** applies its room invariants on every birth, each key carrying a RimZ default you can override. The pane-border keys are optional overrides; unset, they fall through to your `~/.tmux.conf` or tmux defaults just like `pane_frames`. Setting `pane_border_status` makes RimZ own `pane-border-format` too, blanking the sidebar border row and overriding any `~/.tmux.conf` format; unset, your tmux config wins and may title the sidebar. The table spans session, window, and server scope, including clipboard and rich-key handling, because tmux has no per-session form for those.
 
 ```toml
@@ -283,13 +283,14 @@ The two backends differ in how a key takes effect:
 default = "tmux"
 
 [zellij]
+bar = "status"             # "status" shows live mode keys; "compact" keeps the legacy bar
 pane_frames = true          # an optional override; unset, your config.kdl wins
 
 [tmux]
 ## pane_border_status = "top"  # optional override; unset, your ~/.tmux.conf wins
 ```
 
-To configure your *own* Zellij or tmux (the theme, true color, copy-mode, and keybindings RimZ leaves to you, and your sessions outside the room) see the [Zellij](./multiplexer.md#zellij) and [tmux](./multiplexer.md#tmux) baselines.
+The Zellij bar is part of the immutable birth layout, so changing it affects new or explicitly reborn rooms rather than replacing a live room's plugin pane. To configure your *own* Zellij or tmux (the theme, true color, copy-mode, and keybindings RimZ leaves to you, and your sessions outside the room) see the [Zellij](./multiplexer.md#zellij) and [tmux](./multiplexer.md#tmux) baselines.
 
 ### Sidebar rendering
 
@@ -325,7 +326,7 @@ inactive_after_secs = 3600
 archive_after_secs = 86400
 ```
 
-`timezone` is an optional IANA zone for displayed transcript times, wall-clock scheduling, and the `"today"` spend cutoff; unset or unknown uses the system local zone. `focus_key` is the global multiplexer chord that focuses the sidebar from any pane and toggles back to your last working pane; both backends bind it at session birth, the default is `Alt+p`, and `""` or `off` registers nothing. `afk_after_secs` sets the input-idle window before the footer shows `zᶻ idle` on tmux, adding `· Nm` after the first minute; Zellij reports attach state only, so it shows `zᶻ away` on full detach regardless of this value, and the default is 900 seconds (15 minutes). `trunk` is a preferred comparison branch for the worktree header's git stats, falling back to `main` → `master` → the remote default when it does not resolve.
+`timezone` is an optional IANA zone for displayed transcript times, wall-clock scheduling, and the `"today"` spend cutoff; unset or unknown uses the system local zone. `focus_key` is the global multiplexer chord that focuses the sidebar from any pane and toggles back to your last working pane; both backends bind it at session birth, the default is `Alt+p`, and `""`, `off`, or `none` registers nothing. `afk_after_secs` sets the input-idle window before the footer shows `zᶻ idle` on tmux, adding `· Nm` after the first minute; Zellij reports attach state only, so it shows `zᶻ away` on full detach regardless of this value, and the default is 900 seconds (15 minutes). `trunk` is a preferred comparison branch for the worktree header's git stats, falling back to `main` → `master` → the remote default when it does not resolve.
 
 `[agents.attention]` tunes attention timing: `active_grace_secs` bounds how much silence an open working span adds to the root session's estimated active time (three minutes by default), `stalled_after_secs` is when a silent running agent escalates to the actionable `!` bucket (30 minutes by default), `tool_repeat_warn_after` marks a consecutive identical-tool run with `⟲` (3 calls), `tool_repeat_attention_after` escalates that run to `!` (20 calls), `inactive_after_secs` is when a card leaves hot work (one hour, the prompt-cache boundary, so a cold card reads as cold), and `archive_after_secs` is when a card parks below hot and warm work (24 hours by default). Set `archive_after_secs` greater than `inactive_after_secs`; a lower value is lifted to the first second after the inactive window. The `[theme.display]` knobs that share this area (render cadence, sizing, `scrollbar`, and `card_density`) are theme settings; see [theme.md → Display](./theme.md#display).
 

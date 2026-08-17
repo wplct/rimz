@@ -21,7 +21,15 @@ pub(in crate::backend::zellij) fn serve_processes_for(session: &str) -> Result<u
         .count())
 }
 
-pub(in crate::backend::zellij) fn assert_session_has_bottom_bar(xdg: &Path, session: &str) {
+pub(in crate::backend::zellij) fn assert_session_has_configured_bars(
+    xdg: &Path,
+    session: &str,
+    bar: rimz::config::ZellijBar,
+) {
+    let expected = match bar {
+        rimz::config::ZellijBar::Status => "status-bar",
+        rimz::config::ZellijBar::Compact => "compact-bar",
+    };
     let snapshot = PaneSnapshot::expect(xdg, session);
     assert!(
         snapshot.panes.iter().any(|pane| {
@@ -29,9 +37,21 @@ pub(in crate::backend::zellij) fn assert_session_has_bottom_bar(xdg: &Path, sess
                 && pane
                     .title
                     .as_deref()
-                    .is_some_and(|title| title.contains("compact-bar"))
+                    .is_some_and(|title| title.contains(expected))
         }),
-        "session {session} should carry a bottom bar plugin: {snapshot:?}",
+        "session {session} should carry the configured {expected} plugin: {snapshot:?}",
+    );
+    let has_tab_bar = snapshot.panes.iter().any(|pane| {
+        pane.is_plugin
+            && pane
+                .title
+                .as_deref()
+                .is_some_and(|title| title.contains("tab-bar"))
+    });
+    assert_eq!(
+        has_tab_bar,
+        bar == rimz::config::ZellijBar::Status,
+        "session {session} should carry a separate tab-bar only in status mode: {snapshot:?}",
     );
 }
 

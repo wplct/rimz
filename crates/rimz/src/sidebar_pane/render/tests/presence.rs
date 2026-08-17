@@ -39,7 +39,7 @@ fn idle_presence_badge_renders_muted_elapsed_time() {
     let text = footer_text(&snapshot, 32);
 
     assert!(text.starts_with("zᶻ idle · 17m"));
-    assert!(text.ends_with("? for help"));
+    assert!(text.ends_with("Alt+p sidebar · ?"));
     let spans = footer_spans(&snapshot, 32);
     let badge = spans
         .iter()
@@ -57,8 +57,8 @@ fn idle_presence_badge_omits_sub_minute_elapsed_time() {
     let text = footer_text(&snapshot, 32);
 
     assert!(text.starts_with("zᶻ idle"));
-    assert!(!text.contains('·'));
-    assert!(text.ends_with("? for help"));
+    assert!(!text.starts_with("zᶻ idle ·"));
+    assert!(text.ends_with("Alt+p sidebar · ?"));
 }
 
 #[test]
@@ -70,7 +70,7 @@ fn idle_presence_badge_floors_elapsed_time_to_minutes() {
     let text = footer_text(&snapshot, 32);
 
     assert!(text.starts_with("zᶻ idle · 1m"));
-    assert!(text.ends_with("? for help"));
+    assert!(text.ends_with("Alt+p sidebar · ?"));
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn detached_presence_badge_renders_away() {
     let text = footer_text(&snapshot, 28);
 
     assert!(text.starts_with("zᶻ away"));
-    assert!(text.ends_with("? for help"));
+    assert!(text.ends_with("Alt+p sidebar · ?"));
 }
 
 #[test]
@@ -88,8 +88,37 @@ fn active_and_unknown_presence_render_no_badge() {
     let active = with_presence(Some(crate::store::snapshot::SidebarPresence::Active));
     let unknown = with_presence(None);
 
-    assert_eq!(footer_text(&active, 20), "          ? for help");
-    assert_eq!(footer_text(&unknown, 20), "          ? for help");
+    assert_eq!(footer_text(&active, 20), "   Alt+p sidebar · ?");
+    assert_eq!(footer_text(&unknown, 20), "   Alt+p sidebar · ?");
+}
+
+#[test]
+fn footer_explains_the_configured_sidebar_toggle() {
+    let mut snapshot = with_presence(None);
+
+    assert!(
+        footer_text(&snapshot, 54).ends_with("Alt+p sidebar/back · ? for help"),
+        "the default reminder explains both directions of the toggle",
+    );
+    assert_eq!(
+        footer_text(&snapshot, 22),
+        "     Alt+p sidebar · ?",
+        "the minimum sidebar width keeps the focus chord visible",
+    );
+
+    snapshot.sidebar.focus_key = "control-s".to_owned();
+    assert!(
+        footer_text(&snapshot, 54).ends_with("Ctrl+s sidebar/back · ? for help"),
+        "the reminder uses the binding that RimZ actually parses",
+    );
+
+    snapshot.sidebar.focus_key = "off".to_owned();
+    assert!(footer_text(&snapshot, 54).ends_with("? for help"));
+    assert!(!footer_text(&snapshot, 54).contains("sidebar"));
+
+    snapshot.sidebar.focus_key = "not-a-chord".to_owned();
+    assert!(footer_text(&snapshot, 54).ends_with("? for help"));
+    assert!(!footer_text(&snapshot, 54).contains("not-a-chord"));
 }
 
 #[test]
@@ -106,7 +135,7 @@ fn presence_badge_precedes_remote_link_when_both_fit() {
     let text = footer_text(&snapshot, 44);
 
     assert!(text.starts_with("zᶻ away  ⇄ remote 42ms"));
-    assert!(text.ends_with("? for help"));
+    assert!(text.ends_with("Alt+p sidebar · ?"));
 }
 
 #[test]
@@ -124,7 +153,7 @@ fn presence_badge_drops_remote_link_when_footer_is_narrow() {
 
     assert!(text.starts_with("zᶻ away"));
     assert!(!text.contains("remote"));
-    assert!(text.ends_with("? for help"));
+    assert!(text.ends_with("Alt+p sidebar"));
 }
 
 #[test]
@@ -142,6 +171,7 @@ fn link_badge_does_not_replace_presence_when_only_link_fits() {
 
     let text = footer_text(&snapshot, 22);
 
-    assert_eq!(text, "            ? for help");
+    assert!(text.starts_with("zᶻ idle · 17m"));
+    assert!(text.ends_with("? help"));
     assert!(!text.contains("remote"));
 }

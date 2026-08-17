@@ -307,7 +307,7 @@ Zellij does not expose a tab-width query, so RimZ infers the viewport from the r
 
 ### The birth layout
 
-Every tab is shaped the same way: a left `rimz-sidebar` pane and a focused terminal, above a one-row compact-bar plugin. A `new_tab_template` plus explicit birth tabs carry that shape forward.
+Every tab is shaped the same way: a left `rimz-sidebar` pane and a focused terminal, above one configured Zellij bar plugin. The default `status-bar` consumes the same single row as the legacy `compact-bar` while restoring Zellij's live mode and shortcut guide; `[zellij] bar = "compact"` keeps the old presentation. A `new_tab_template` plus explicit birth tabs carry that shape forward, so a bar change takes effect only on a new or explicitly reborn room.
 
 Several details in [`layout.rs`](../../crates/rimz/src/mux/zellij/layout.rs) are load-bearing:
 
@@ -350,7 +350,7 @@ Live reinjection resolves a stable tab id from an existing work pane and runs `n
 
 A timed-out authoritative read aborts the pass instead of falling back to the topology cache, so stale truth never drives a close or a spawn; the next elder or toggle pass retries.
 
-RimZ passes `auto_layout=false` and `stacked_resize=true`, so `Alt+n` uses Zellij's native focused-pane split along the terminal's real cell-ratio-favorable edge, and closing a pane returns the freed space to the sibling it split from. The birth tree pins the sidebar and compact bar as tree siblings. When an add nests the new sidebar into one row, the same transaction stacks every surviving work pane into the right column; repair of a pre-existing arbitrary multi-column layout stays report-only.
+RimZ passes `auto_layout=false` and `stacked_resize=true`, so `Alt+n` uses Zellij's native focused-pane split along the terminal's real cell-ratio-favorable edge, and closing a pane returns the freed space to the sibling it split from. The birth tree pins the sidebar and configured bar as tree siblings. When an add nests the new sidebar into one row, the same transaction stacks every surviving work pane into the right column; repair of a pre-existing arbitrary multi-column layout stays report-only.
 
 The producer's shrink-confirmation path bypasses `pane-topology.json` entirely and reads `zellij action list-panes --all --json`, merging cached foreground command and cwd only as enrichment. If that server query fails, the backend falls back to the topology cache with a debug log. tmux already lists directly from the server, so its authoritative flag is a no-op.
 
