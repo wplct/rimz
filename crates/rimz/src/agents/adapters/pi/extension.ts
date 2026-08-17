@@ -30,6 +30,7 @@ const versionAtLeast = (version, floor) => {
 const hasAgentSettled = versionAtLeast(PI_VERSION, [0, 80, 4]);
 const PARENT_SESSION_ENV = "RIMZ_PI_PARENT_SESSION";
 const PRIMARY_SESSION = Symbol.for("rimz.pi.primary-session");
+const SESSION_REPLACEMENT_REASONS = new Set(["new", "resume", "fork", "reload"]);
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 const roundMaybe = (value) =>
@@ -93,6 +94,7 @@ export default function rimz(pi) {
   const messagePushBySession = new Map();
   let isPrimary = false;
   let childParentId;
+  let sessionLineage;
   let childStopFed = false;
   let latestWindows = [];
 
@@ -188,7 +190,11 @@ export default function rimz(pi) {
     const id = sessionId(ctx);
     if (id) {
       if (isPrimary && globalThis[PRIMARY_SESSION]?.id !== id) {
-        globalThis[PRIMARY_SESSION] = { id };
+        globalThis[PRIMARY_SESSION] = {
+          id,
+          lineage: sessionLineage,
+          parentId: childParentId,
+        };
       }
       if (isPrimary && process.env[PARENT_SESSION_ENV] !== id) {
         process.env[PARENT_SESSION_ENV] = id;
@@ -319,18 +325,65 @@ export default function rimz(pi) {
   pi.on("session_start", (ev, ctx) => {
     hydrateSession(ctx);
     const id = sessionId(ctx);
-    const parentId = text(globalThis[PRIMARY_SESSION]?.id) ??
-      text(process.env[PARENT_SESSION_ENV]);
-    if (!isPrimary && id && parentId && parentId !== id && !childParentId) {
-      childParentId = parentId;
-      feedChildStart(ctx);
+    const processSession = globalThis[PRIMARY_SESSION];
+    const processSessionId = text(processSession?.id);
+    const processLineage = text(processSession?.lineage);
+    const inheritedParentId = text(process.env[PARENT_SESSION_ENV]);
+    const replacement = SESSION_REPLACEMENT_REASONS.has(text(ev?.reason));
+    const legacyChild = text(process.env.PI_SUBAGENT_CHILD_AGENT);
+    if (!isPrimary) {
+      if (replacement && processLineage === "child") {
+        // Session replacement rebuilds the extension factory. A child process
+        // remains attached to its original parent across its own session switch.
+        sessionLineage = "child";
+        childParentId = text(processSession.parentId);
+      } else if (replacement && !processLineage && legacyChild) {
+        // A pre-lineage child no longer exposes its original parent. Keep the
+        // wire ambiguous so an established relationship is not cleared.
+        sessionLineage = undefined;
+        childParentId = undefined;
+      } else if (replacement) {
+        // Pi explicitly distinguishes same-process session replacement from a
+        // fresh child process. The temporary startup session is not a parent.
+        sessionLineage = "root";
+        childParentId = undefined;
+      } else if (processSessionId === id && processLineage) {
+        sessionLineage = processLineage;
+        childParentId = text(processSession.parentId);
+      } else if (inheritedParentId && inheritedParentId !== id) {
+        // A separate extension instance in the same process, or a fresh child
+        // process, inherits the active parent session id.
+        sessionLineage = "child";
+        childParentId = inheritedParentId;
+      } else if (processSessionId === id && legacyChild) {
+        // A pre-lineage child subprocess overwrote its inherited parent marker.
+        // Leave lineage absent so the reducer preserves the established link.
+        sessionLineage = undefined;
+        childParentId = undefined;
+      } else {
+        // A marker-free startup is the root session for this process.
+        sessionLineage = "root";
+        childParentId = undefined;
+      }
     }
-    if (id && (isPrimary || !globalThis[PRIMARY_SESSION] || globalThis[PRIMARY_SESSION]?.id === id)) {
-      globalThis[PRIMARY_SESSION] = { id };
+    if (id) {
+      globalThis[PRIMARY_SESSION] = {
+        id,
+        lineage: sessionLineage,
+        parentId: childParentId,
+      };
       process.env[PARENT_SESSION_ENV] = id;
       isPrimary = true;
     }
-    feed("session_start", ctx, { reason: ev?.reason });
+    if (childParentId && processSession?.id !== id) {
+      childStopFed = false;
+      feedChildStart(ctx);
+    }
+    feed("session_start", ctx, {
+      reason: ev?.reason,
+      session_lineage: sessionLineage,
+      parent_session_id: childParentId,
+    });
   });
   pi.on("before_agent_start", (ev, ctx) => {
     verdictBySession.delete(sessionId(ctx));

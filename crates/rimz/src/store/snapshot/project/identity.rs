@@ -202,8 +202,9 @@ impl CardIdentityAllocator {
         prior: Option<&AgentState>,
     ) -> CardIdentity {
         let key = (kind.clone(), agent_id.clone());
-        let child = observation.parent_agent_id.is_some()
-            || prior.is_some_and(AgentState::is_provider_subagent);
+        let child = !observation.explicit_root
+            && (observation.parent_agent_id.is_some()
+                || prior.is_some_and(AgentState::is_provider_subagent));
         let name = if child {
             self.names.retain(|_, owner| owner != &key);
             self.assign_child_name(observation.agent_name.as_deref(), prior, agent_id)
