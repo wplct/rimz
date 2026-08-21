@@ -584,12 +584,7 @@ impl LoopState {
         }
         let requests_verification = envelope.event.requests_producer_verification();
         let sent_at_ms = envelope.sent_at_ms;
-        if matches!(
-            &envelope.event,
-            SidebarEvent::PaneClosed { .. }
-                | SidebarEvent::PaneOpened { .. }
-                | SidebarEvent::PanesChanged
-        ) {
+        if confirms_structural_width_change(&envelope.event) {
             let measured = terminal.size().ok().map(|size| size.width);
             self.width_control
                 .note_structural(sent_at_ms, measured, diag);
@@ -1906,6 +1901,14 @@ fn wake_room(runtime: &RuntimePaths) {
     if let Err(err) = crate::sidebar::wakeup::wake_store_delta(runtime, None, None) {
         debug!(error = %err, "mark read/unread sidebar wake failed");
     }
+}
+
+/// 判断事件是否足以证明 pane 结构变化，而不只是请求刷新拓扑。
+fn confirms_structural_width_change(event: &SidebarEvent) -> bool {
+    matches!(
+        event,
+        SidebarEvent::PaneClosed { .. } | SidebarEvent::PaneOpened { .. }
+    )
 }
 
 #[cfg(test)]

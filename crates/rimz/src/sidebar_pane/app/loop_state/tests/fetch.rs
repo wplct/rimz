@@ -3,6 +3,25 @@
 
 use super::*;
 
+/// 匿名拓扑提示只触发刷新，不能把用户拖动误判为结构变化。
+#[test]
+fn anonymous_pane_nudge_does_not_confirm_structural_width_change() {
+    let pane_id = pane("terminal_1", "tab_0", false).pane_id;
+
+    assert!(!confirms_structural_width_change(
+        &SidebarEvent::PanesChanged
+    ));
+    assert!(confirms_structural_width_change(
+        &SidebarEvent::PaneOpened {
+            pane_id: pane_id.clone(),
+            command: None,
+        }
+    ));
+    assert!(confirms_structural_width_change(
+        &SidebarEvent::PaneClosed { pane_id }
+    ));
+}
+
 #[test]
 fn unchanged_fetch_outcome_clears_in_flight_without_dirtying_frame() {
     let mut rig = Rig::new();
